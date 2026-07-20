@@ -6,6 +6,8 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "deep-translator>=1.11.4",
+    "easyocr>=1.7.2",
+    "numpy>=2.5.1",
     "pillow>=12.3.0",
     "pymupdf>=1.28.0",
     "pytesseract>=0.3.13",
