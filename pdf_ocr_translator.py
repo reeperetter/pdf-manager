@@ -72,6 +72,92 @@ def find_unicode_font(user_path=None):
 #  Допоміжні функції
 # =========================================================================
 
+def extract_lines_from_page(page):
+    """Витягує рядки тексту з наявного текстового шару PDF (координати сторінки)."""
+    lines = []
+    for block in page.get_text("dict").get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            spans = line.get("spans", [])
+            if not spans:
+                continue
+            text = "".join(s["text"] for s in spans).strip()
+            if not text:
+                continue
+            x0 = min(s["bbox"][0] for s in spans)
+            y0 = min(s["bbox"][1] for s in spans)
+            x1 = max(s["bbox"][2] for s in spans)
+            y1 = max(s["bbox"][3] for s in spans)
+            lines.append(
+                {"text": text, "bbox": (x0, y0, x1, y1), "page_coords": True}
+            )
+    return lines
+
+
+def line_to_rect(line, scale_x, scale_y):
+    """Перетворює bbox рядка у fitz.Rect (сторінкові координати)."""
+    x0, y0, x1, y1 = line["bbox"]
+    if line.get("page_coords"):
+        return fitz.Rect(x0, y0, x1, y1)
+    return fitz.Rect(x0 * scale_x, y0 * scale_y, x1 * scale_x, y1 * scale_y)
+
+
+def line_to_pixel_bbox(line, scale_x, scale_y):
+    """Перетворює bbox рядка у координати пікселів зображення."""
+    x0, y0, x1, y1 = line["bbox"]
+    if line.get("page_coords"):
+        return (x0 / scale_x, y0 / scale_y, x1 / scale_x, y1 / scale_y)
+    return line["bbox"]
+
+
+def setup_gui_fonts(root):
+    """Налаштовує шрифт з кирилицею та охайнішу тему для Tk/ttk (особливо на Linux).
+
+    За замовчуванням тема Tk на багатьох Linux-дистрибутивах ("default"/X11)
+    виглядає застаріло, а сам системний шрифт може не мати гарної кирилиці.
+    Тому тут: 1) перемикаємо ttk-тему на охайнішу, якщо вона є в системі;
+    2) створюємо свій шрифт з файлу (кирилиця гарантована) і застосовуємо
+    його максимально широко — не лише до кількох стилів, як було раніше,
+    а до всіх основних ttk-віджетів (Entry, Combobox, Spinbox, Treeview
+    тощо), бо саме поля вводу й списки найчастіше лишались "негарними"."""
+    style = ttk.Style(root)
+    if os.name != "nt":
+        try:
+            available = style.theme_names()
+            for preferred in ("clam", "alt", "default"):
+                if preferred in available:
+                    style.theme_use(preferred)
+                    break
+        except tk.TclError:
+            pass
+
+    if os.name == "nt":
+        return None
+
+    font_path = find_unicode_font()
+    if not font_path:
+        return None
+    try:
+        root.tk.call("tk", "fontCreate", "AppUIFont",
+                     "-file", font_path, "-size", 11)
+        root.option_add("*Font", "AppUIFont")
+        ttk_classes = (
+            ".", "TLabel", "TButton", "TCheckbutton", "TRadiobutton",
+            "TLabelframe", "TLabelframe.Label", "TEntry", "TCombobox",
+            "TSpinbox", "TNotebook", "TNotebook.Tab", "Treeview",
+            "Treeview.Heading", "TFrame", "TPanedwindow", "TProgressbar",
+        )
+        for element in ttk_classes:
+            try:
+                style.configure(element, font="AppUIFont")
+            except tk.TclError:
+                pass
+        return "AppUIFont"
+    except tk.TclError:
+        return None
+
+
 def ocr_lines_from_image(reader, pil_img, min_confidence=0.25):
     """Запускає EasyOCR на зображенні сторінки та повертає список рядків:
     {"text": str, "bbox": (x0,y0,x1,y1)} у пікселях зображення."""
@@ -136,8 +222,6 @@ class ProcessingCancelled(Exception):
 
 
 def process_pdf(
-    # готовий easyocr.Reader (створюється один раз на сесію)
-    reader,
     input_path,
     output_dir,
     dpi,
@@ -146,6 +230,9 @@ def process_pdf(
     font_path,
     log_fn,
     cancel_event,
+    reader=None,         # easyocr.Reader або None, якщо OCR ще не потрібен
+    get_reader=None,     # callable() -> reader; lazy-завантаження при fallback OCR
+    force_ocr=False,     # True = завжди розпізнавати наново, ігноруючи текстовий шар PDF
 ):
     """Обробляє один PDF-файл: OCR + (опційно) створення searchable PDF
     та перекладених PDF. log_fn(str) - для виводу повідомлень у GUI."""
@@ -168,6 +255,15 @@ def process_pdf(
         lang: GoogleTranslator(source="auto", target=lang) for lang in translate_targets
     }
 
+    def ensure_reader():
+        nonlocal reader
+        if reader is None:
+            if get_reader is None:
+                raise RuntimeError(
+                    "OCR потрібен, але модель розпізнавання не завантажена.")
+            reader = get_reader()
+        return reader
+
     for page_index in range(n_pages):
         if cancel_event.is_set():
             raise ProcessingCancelled()
@@ -182,19 +278,33 @@ def process_pdf(
         scale_x = page_w / pix.width
         scale_y = page_h / pix.height
 
-        log_fn(
-            f"[{base_name}] Сторінка {page_index + 1}/{n_pages}: розпізнавання тексту...")
-        lines = ocr_lines_from_image(reader, pil_img)
+        lines = []
+        if make_searchable or translate_targets:
+            # 1) Якщо не увімкнено примусовий OCR — спершу пробуємо взяти
+            #    вже наявний текстовий шар PDF. Це стосується ОБОХ режимів
+            #    (і "розпізнаваний PDF", і "переклад"), а не лише перекладу,
+            #    як було раніше. Саме тут ховався головний баг: раніше для
+            #    "розпізнаваного PDF" OCR запускався на кожній сторінці
+            #    безумовно, навіть коли текст уже був у файлі.
+            if not force_ocr:
+                lines = extract_lines_from_page(page)
+            if lines:
+                log_fn(
+                    f"[{base_name}] Сторінка {page_index + 1}/{n_pages}: "
+                    f"текст з PDF ({len(lines)} рядків), OCR пропущено")
+            else:
+                reason = "примусовий режим OCR" if force_ocr else "немає текстового шару"
+                log_fn(
+                    f"[{base_name}] Сторінка {page_index + 1}/{n_pages}: "
+                    f"{reason} — розпізнавання (OCR)...")
+                lines = ocr_lines_from_image(ensure_reader(), pil_img)
 
         # ---------- 1) Розпізнаваний PDF (той самий вигляд + невидимий текст) ----------
         if out_searchable is not None:
             sp = out_searchable.new_page(width=page_w, height=page_h)
             sp.insert_image(sp.rect, stream=img_bytes)
             for line in lines:
-                x0, y0, x1, y1 = line["bbox"]
-                rect = fitz.Rect(
-                    x0 * scale_x, y0 * scale_y, x1 * scale_x, y1 * scale_y
-                )
+                rect = line_to_rect(line, scale_x, scale_y)
                 if rect.is_empty or rect.width <= 0 or rect.height <= 0:
                     continue
                 fs = fit_fontsize(
@@ -213,39 +323,40 @@ def process_pdf(
                     log_fn(f"  [!] Пропущено рядок (текстовий шар): {e}")
 
         # ---------- 2) Перекладені PDF ----------
-        if translate_targets and lines:
-            log_fn(
-                f"[{base_name}] Сторінка {page_index + 1}/{n_pages}: переклад...")
-            texts_to_translate = [ln["text"] for ln in lines]
+        if translate_targets:
             translations = {}
-            for lang in translate_targets:
-                try:
-                    translations[lang] = translators[lang].translate_batch(
-                        texts_to_translate
-                    )
-                except Exception as e:
-                    log_fn(
-                        f"  [!] Помилка перекладу ({lang}): {e}. Пробую по рядку...")
-                    result = []
-                    for t in texts_to_translate:
-                        try:
-                            result.append(translators[lang].translate(t))
-                        except Exception:
-                            result.append(t)
-                    translations[lang] = result
+            if lines:
+                log_fn(
+                    f"[{base_name}] Сторінка {page_index + 1}/{n_pages}: переклад...")
+                texts_to_translate = [ln["text"] for ln in lines]
+                for lang in translate_targets:
+                    try:
+                        translations[lang] = translators[lang].translate_batch(
+                            texts_to_translate
+                        )
+                    except Exception as e:
+                        log_fn(
+                            f"  [!] Помилка перекладу ({lang}): {e}. Пробую по рядку...")
+                        result = []
+                        for t in texts_to_translate:
+                            try:
+                                result.append(translators[lang].translate(t))
+                            except Exception:
+                                result.append(t)
+                        translations[lang] = result
 
             for lang in translate_targets:
                 tp = out_translated[lang].new_page(width=page_w, height=page_h)
                 tp.insert_image(tp.rect, stream=img_bytes)
+                if not lines:
+                    continue
                 translated_lines = translations[lang]
                 for line, tr_text in zip(lines, translated_lines):
-                    x0, y0, x1, y1 = line["bbox"]
-                    rect = fitz.Rect(
-                        x0 * scale_x, y0 * scale_y, x1 * scale_x, y1 * scale_y
-                    )
+                    rect = line_to_rect(line, scale_x, scale_y)
                     if rect.is_empty or rect.width <= 0 or rect.height <= 0:
                         continue
-                    bg = sample_bg_color(pil_img, line["bbox"])
+                    px_bbox = line_to_pixel_bbox(line, scale_x, scale_y)
+                    bg = sample_bg_color(pil_img, px_bbox)
                     cover = fitz.Rect(rect.x0 - 1, rect.y0 - 1,
                                       rect.x1 + 1, rect.y1 + 1)
                     tp.draw_rect(cover, color=bg, fill=bg, overlay=True)
@@ -313,8 +424,9 @@ class App(tk.Tk):
         # Діалоги вибору файлів за замовчуванням відкриваються в корені
         # диска (Linux: "/", Windows: "C:\\"), а далі запам'ятовують
         # останню відкриту користувачем директорію.
-        self.last_dir = "C:\\" if os.name == "nt" else "/home"
+        self.last_dir = os.path.expanduser("~")
 
+        self.gui_font = setup_gui_fonts(self)
         self._build_ui()
         self.after(150, self._poll_log_queue)
 
@@ -325,7 +437,11 @@ class App(tk.Tk):
         frm_files = ttk.LabelFrame(self, text="1. Вхідні PDF-файли")
         frm_files.pack(fill="x", **pad)
 
-        self.listbox = tk.Listbox(frm_files, height=6, selectmode="extended")
+        entry_font = (self.gui_font, 11) if self.gui_font else None
+        listbox_kwargs = {"height": 6, "selectmode": "extended"}
+        if entry_font:
+            listbox_kwargs["font"] = entry_font
+        self.listbox = tk.Listbox(frm_files, **listbox_kwargs)
         self.listbox.pack(fill="x", padx=6, pady=6, side="left", expand=True)
         scrollbar = ttk.Scrollbar(
             frm_files, orient="vertical", command=self.listbox.yview)
@@ -346,9 +462,11 @@ class App(tk.Tk):
         frm_opts = ttk.LabelFrame(self, text="2. Мови розпізнавання (OCR)")
         frm_opts.pack(fill="x", **pad)
 
-        ttk.Label(frm_opts, text="Яку(і) мову(и) шукати в тексті оригіналу:").grid(
-            row=0, column=0, columnspan=4, sticky="w", **pad
-        )
+        ttk.Label(
+            frm_opts,
+            text="Яку(і) мову(и) шукати в тексті оригіналу (потрібно для розпізнаваного PDF\n"
+            "або для сканів без текстового шару при перекладі):",
+        ).grid(row=0, column=0, columnspan=4, sticky="w", **pad)
         self.ocr_lang_vars = {}
         col = 0
         for label, code in OCR_LANGS:
@@ -372,12 +490,22 @@ class App(tk.Tk):
             variable=self.gpu_var,
         ).grid(row=3, column=0, columnspan=4, sticky="w", **pad)
 
+        self.force_ocr_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            frm_opts,
+            text="Завжди розпізнавати наново (OCR), навіть якщо в PDF вже є текстовий шар",
+            variable=self.force_ocr_var,
+        ).grid(row=3, column=2, columnspan=2, sticky="w", **pad)
+
         ttk.Label(
             frm_opts,
             text="Шрифт з кирилицею (необов'язково — за замовчуванням\nвикористовується вбудований DejaVu Sans):",
         ).grid(row=4, column=0, columnspan=2, sticky="w", **pad)
         self.font_var = tk.StringVar(value="")
-        ttk.Entry(frm_opts, textvariable=self.font_var, width=40).grid(
+        font_entry_kwargs = {"textvariable": self.font_var, "width": 40}
+        if entry_font:
+            font_entry_kwargs["font"] = entry_font
+        tk.Entry(frm_opts, **font_entry_kwargs).grid(
             row=4, column=2, sticky="w", **pad
         )
         ttk.Button(frm_opts, text="Огляд...", command=self.choose_font).grid(
@@ -408,7 +536,10 @@ class App(tk.Tk):
         self.out_dir_var = tk.StringVar(
             value=os.path.join(os.path.expanduser("~"), "pdf_ocr_output")
         )
-        ttk.Entry(frm_out, textvariable=self.out_dir_var, width=60).pack(
+        out_entry_kwargs = {"textvariable": self.out_dir_var, "width": 60}
+        if entry_font:
+            out_entry_kwargs["font"] = entry_font
+        tk.Entry(frm_out, **out_entry_kwargs).pack(
             side="left", padx=6, pady=6, fill="x", expand=True
         )
         ttk.Button(frm_out, text="Огляд...", command=self.choose_out_dir).pack(
@@ -428,8 +559,10 @@ class App(tk.Tk):
 
         frm_log = ttk.LabelFrame(self, text="Журнал")
         frm_log.pack(fill="both", expand=True, **pad)
-        self.log_text = tk.Text(
-            frm_log, height=12, state="disabled", wrap="word")
+        log_kwargs = {"height": 12, "state": "disabled", "wrap": "word"}
+        if entry_font:
+            log_kwargs["font"] = entry_font
+        self.log_text = tk.Text(frm_log, **log_kwargs)
         self.log_text.pack(fill="both", expand=True, padx=6, pady=6)
 
     # ---------------- Дії ----------------
@@ -506,23 +639,29 @@ class App(tk.Tk):
                 "Нічого робити", "Виберіть хоча б одну дію у розділі 3.")
             return
 
+        make_searchable = self.var_searchable.get()
+        translate_targets = []
+        if self.var_uk.get():
+            translate_targets.append("uk")
+        if self.var_ru.get():
+            translate_targets.append("ru")
+
         ocr_langs = [code for code,
                      var in self.ocr_lang_vars.items() if var.get()]
-        if not ocr_langs:
+        if (make_searchable or translate_targets) and not ocr_langs:
             messagebox.showwarning(
-                "Немає мов", "Виберіть хоча б одну мову розпізнавання у розділі 2.")
+                "Немає мов OCR",
+                "Виберіть хоча б одну мову OCR у розділі 2.\n\n"
+                "OCR запуститься лише для сторінок, де немає текстового шару "
+                "(або для всіх сторінок, якщо увімкнено «Завжди розпізнавати наново»).",
+            )
             return
 
         dpi = self.dpi_var.get()
         font_path = self.font_var.get().strip() or None
         out_dir = self.out_dir_var.get().strip()
         gpu = self.gpu_var.get()
-
-        translate_targets = []
-        if self.var_uk.get():
-            translate_targets.append("uk")
-        if self.var_ru.get():
-            translate_targets.append("ru")
+        force_ocr = self.force_ocr_var.get()
 
         self.cancel_event.clear()
         self.start_btn.config(state="disabled")
@@ -533,7 +672,7 @@ class App(tk.Tk):
             target=self._run_worker,
             args=(
                 list(self.files), out_dir, ocr_langs, gpu, dpi,
-                self.var_searchable.get(), translate_targets, font_path,
+                self.var_searchable.get(), translate_targets, font_path, force_ocr,
             ),
             daemon=True,
         )
@@ -555,17 +694,37 @@ class App(tk.Tk):
             self.log("Модель готова.")
         return self.reader_cache[key]
 
-    def _run_worker(self, files, out_dir, ocr_langs, gpu, dpi, make_searchable, translate_targets, font_path):
-        try:
-            reader = self._get_reader(ocr_langs, gpu)
-        except Exception:
-            self.log(
-                f"[ПОМИЛКА] Не вдалося завантажити модель розпізнавання:\n{traceback.format_exc()}")
-            self.start_btn.after(
-                0, lambda: self.start_btn.config(state="normal"))
-            self.cancel_btn.after(
-                0, lambda: self.cancel_btn.config(state="disabled"))
-            return
+    def _run_worker(self, files, out_dir, ocr_langs, gpu, dpi, make_searchable, translate_targets, font_path, force_ocr):
+        reader = None
+        reader_error = None
+
+        def get_reader():
+            nonlocal reader, reader_error
+            if reader is not None:
+                return reader
+            if reader_error is not None:
+                raise reader_error
+            try:
+                reader = self._get_reader(ocr_langs, gpu)
+                return reader
+            except Exception as exc:
+                reader_error = exc
+                raise
+
+        # Модель OCR гарантовано знадобиться відразу, лише якщо увімкнено
+        # примусовий OCR. В інших випадках вона підвантажується лениво —
+        # тільки якщо для конкретної сторінки справді немає текстового шару.
+        if force_ocr and (make_searchable or translate_targets):
+            try:
+                get_reader()
+            except Exception:
+                self.log(
+                    f"[ПОМИЛКА] Не вдалося завантажити модель розпізнавання:\n{traceback.format_exc()}")
+                self.start_btn.after(
+                    0, lambda: self.start_btn.config(state="normal"))
+                self.cancel_btn.after(
+                    0, lambda: self.cancel_btn.config(state="disabled"))
+                return
 
         done = 0
         for path in files:
@@ -575,7 +734,6 @@ class App(tk.Tk):
             try:
                 self.log(f"=== Обробка: {os.path.basename(path)} ===")
                 saved = process_pdf(
-                    reader=reader,
                     input_path=path,
                     output_dir=out_dir,
                     dpi=dpi,
@@ -584,6 +742,9 @@ class App(tk.Tk):
                     font_path=font_path,
                     log_fn=self.log,
                     cancel_event=self.cancel_event,
+                    reader=reader,
+                    get_reader=get_reader if ocr_langs else None,
+                    force_ocr=force_ocr,
                 )
                 for s in saved:
                     self.log(f"  -> Збережено: {s}")
@@ -602,6 +763,29 @@ class App(tk.Tk):
             0, lambda: self.cancel_btn.config(state="disabled"))
 
 
+def _init_locale_for_linux_input():
+    """Явно вмикає UTF-8 локаль перед створенням вікна Tk.
+
+    На Linux ввід кирилиці в tk.Entry/tk.Text йде через систему X11 Input
+    Method (XIM) або через IBus/Fcitx поверх неї. Якщо процес Python
+    стартує з локаллю "C"/"POSIX" (типово, коли програму запускають не
+    з термінала, а, наприклад, через ярлик або .desktop-файл без
+    успадкованого середовища), Tk піднімає X-з'єднання ще до того, як
+    дізнається про UTF-8, і XIM просто не активується — тоді кирилицю
+    (і будь-яку не-ASCII розкладку) неможливо ввести в поля вводу, хоча
+    показати її на екрані (шрифтом) можна без проблем. Це НЕ баг у
+    самому коді програми, а особливість оточення, тому один виклик
+    setlocale тут допомагає лише частково: якщо не спрацює, потрібно
+    перевірити системну локаль і змінні GTK_IM_MODULE/XMODIFIERS
+    (див. коментар у README / повідомлення від Claude)."""
+    try:
+        import locale
+        locale.setlocale(locale.LC_ALL, "")
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
+    _init_locale_for_linux_input()
     app = App()
     app.mainloop()
