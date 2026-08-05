@@ -11,3 +11,11 @@ dependencies = [
     "pillow>=12.3.0",
     "pymupdf>=1.28.0",
 ]
+
+[tool.uv]
+# ВАЖЛИВО для tkinter-GUI: власні managed-білди Python від uv
+# (python-build-standalone) лінкують Tcl/Tk БЕЗ Xft/fontconfig, через що
+# кирилиця й нормальні шрифти в GUI ламаються. Тому для цього проєкту
+# змушуємо uv завжди брати системний Python, у якого Tcl/Tk злінкований
+# нормально.
+python-preference = "only-system"

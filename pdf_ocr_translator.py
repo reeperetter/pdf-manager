@@ -8,6 +8,7 @@ import traceback
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+import tkinter.font as tkfont
 
 # ---- Перевірка зовнішніх залежностей з дружнім повідомленням ----
 MISSING = []
@@ -114,15 +115,20 @@ def line_to_pixel_bbox(line, scale_x, scale_y):
 def setup_gui_fonts(root):
     """Налаштовує шрифт з кирилицею та охайнішу тему для Tk/ttk (особливо на Linux).
 
-    За замовчуванням тема Tk на багатьох Linux-дистрибутивах ("default"/X11)
-    виглядає застаріло, а сам системний шрифт може не мати гарної кирилиці.
-    Тому тут: 1) перемикаємо ttk-тему на охайнішу, якщо вона є в системі;
-    2) створюємо свій шрифт з файлу (кирилиця гарантована) і застосовуємо
-    його максимально широко — не лише до кількох стилів, як було раніше,
-    а до всіх основних ttk-віджетів (Entry, Combobox, Spinbox, Treeview
-    тощо), бо саме поля вводу й списки найчастіше лишались "негарними"."""
+    Повертає named-font (tkfont.Font) або None.
+
+    Створює шрифт за іменем родини, вже відомої системі через fontconfig
+    (`font create ... -family {Родина} -size N`), а не за шляхом до файлу —
+    Tk такого API не має. Також примусово ставить `tk scaling 1.0` і задає
+    розмір у пікселях — обхід відомого класу багів з розсинхроном
+    DPI/scaling на деяких Linux-системах."""
     style = ttk.Style(root)
+
     if os.name != "nt":
+        try:
+            root.tk.call("tk", "scaling", 1.0)
+        except tk.TclError:
+            pass
         try:
             available = style.theme_names()
             for preferred in ("clam", "alt", "default"):
@@ -132,16 +138,43 @@ def setup_gui_fonts(root):
         except tk.TclError:
             pass
 
+    root.update_idletasks()  # без цього список родин часто неповний
+
     if os.name == "nt":
         return None
 
-    font_path = find_unicode_font()
-    if not font_path:
-        return None
     try:
-        root.tk.call("tk", "fontCreate", "AppUIFont",
-                     "-file", font_path, "-size", 11)
-        root.option_add("*Font", "AppUIFont")
+        families = sorted(set(tkfont.families(root)))
+    except Exception:
+        families = []
+
+    # Шукаємо першу відому "хорошу" родину з повним покриттям кирилиці.
+    candidates = [
+        "DejaVu Sans", "Noto Sans", "Liberation Sans", "Ubuntu",
+        "Cantarell", "FreeSans", "Droid Sans", "Open Sans", "Roboto",
+    ]
+    lower_map = {f.lower(): f for f in families}
+    chosen_family = None
+    for cand in candidates:
+        if cand.lower() in lower_map:
+            chosen_family = lower_map[cand.lower()]
+            break
+    if chosen_family is None:
+        # запасний варіант: перша не-bitmap/не-symbol родина зі списку
+        for f in families:
+            low = f.lower()
+            if low not in ("symbol", "wingdings", "webdings") and "fixed" not in low:
+                chosen_family = f
+                break
+
+    if not chosen_family:
+        return None
+
+    try:
+        # Розмір у ПІКСЕЛЯХ (від'ємне число) — обходить перерахунок point->pixel
+        # через (можливо помилковий) tk scaling.
+        app_font = tkfont.Font(root, family=chosen_family, size=-15)
+        root.option_add("*Font", app_font)
         ttk_classes = (
             ".", "TLabel", "TButton", "TCheckbutton", "TRadiobutton",
             "TLabelframe", "TLabelframe.Label", "TEntry", "TCombobox",
@@ -150,10 +183,17 @@ def setup_gui_fonts(root):
         )
         for element in ttk_classes:
             try:
-                style.configure(element, font="AppUIFont")
+                style.configure(element, font=app_font)
             except tk.TclError:
                 pass
-        return "AppUIFont"
+        # Перевизначаємо й самі системні іменовані шрифти Tk, щоб охопити
+        # віджети, які їх використовують напряму (Listbox, Text, Entry).
+        for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont"):
+            try:
+                tkfont.nametofont(name).configure(family=chosen_family, size=-15)
+            except tk.TclError:
+                pass
+        return app_font
     except tk.TclError:
         return None
 
@@ -437,7 +477,7 @@ class App(tk.Tk):
         frm_files = ttk.LabelFrame(self, text="1. Вхідні PDF-файли")
         frm_files.pack(fill="x", **pad)
 
-        entry_font = (self.gui_font, 11) if self.gui_font else None
+        entry_font = self.gui_font if self.gui_font else None
         listbox_kwargs = {"height": 6, "selectmode": "extended"}
         if entry_font:
             listbox_kwargs["font"] = entry_font
@@ -495,21 +535,21 @@ class App(tk.Tk):
             frm_opts,
             text="Завжди розпізнавати наново (OCR), навіть якщо в PDF вже є текстовий шар",
             variable=self.force_ocr_var,
-        ).grid(row=3, column=2, columnspan=2, sticky="w", **pad)
+        ).grid(row=4, column=0, columnspan=4, sticky="w", **pad)
 
         ttk.Label(
             frm_opts,
             text="Шрифт з кирилицею (необов'язково — за замовчуванням\nвикористовується вбудований DejaVu Sans):",
-        ).grid(row=4, column=0, columnspan=2, sticky="w", **pad)
+        ).grid(row=5, column=0, columnspan=2, sticky="w", **pad)
         self.font_var = tk.StringVar(value="")
         font_entry_kwargs = {"textvariable": self.font_var, "width": 40}
         if entry_font:
             font_entry_kwargs["font"] = entry_font
         tk.Entry(frm_opts, **font_entry_kwargs).grid(
-            row=4, column=2, sticky="w", **pad
+            row=5, column=2, sticky="w", **pad
         )
         ttk.Button(frm_opts, text="Огляд...", command=self.choose_font).grid(
-            row=4, column=3, sticky="w", **pad)
+            row=5, column=3, sticky="w", **pad)
 
         frm_tasks = ttk.LabelFrame(self, text="3. Що створити")
         frm_tasks.pack(fill="x", **pad)
