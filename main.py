@@ -1,7 +1,9 @@
 import io
 import os
 import sys
+import gc
 import glob
+import shutil
 import queue
 import threading
 import traceback
@@ -17,17 +19,13 @@ try:
 except ImportError:
     MISSING.append("pymupdf")
 try:
-    import numpy as np
-except ImportError:
-    MISSING.append("numpy")
-try:
     from PIL import Image
 except ImportError:
     MISSING.append("pillow")
 try:
-    import easyocr
+    import pytesseract
 except ImportError:
-    MISSING.append("easyocr")
+    MISSING.append("pytesseract")
 try:
     from deep_translator import GoogleTranslator
 except ImportError:
@@ -67,6 +65,52 @@ def find_unicode_font(user_path=None):
         if os.path.isfile(p):
             return p
     return None
+
+
+# Фіксований набір мов для Tesseract: розпізнаємо одразу українську,
+# російську та англійську без вибору користувачем (не впливає ані на
+# швидкодію, ані на роботу самої програми — Tesseract просто одночасно
+# перевіряє символи всіх трьох мовних моделей).
+TESSERACT_LANGS = "ukr+rus+eng"
+
+
+def find_tesseract_cmd():
+    """Шукає бінарник tesseract.
+
+    Порядок пошуку зроблено з розрахунком на майбутню портативну збірку
+    (exe + папка поруч): 1) бандлений бінарник у підпапці "tesseract" поруч
+    зі скриптом (саме туди ляже tesseract.exe/tesseract при пакуванні для
+    розповсюдження — тоді користувачам не треба нічого встановлювати
+    окремо); 2) системний tesseract з PATH (типовий сценарій під час
+    розробки на Linux: `sudo apt install tesseract-ocr tesseract-ocr-ukr
+    tesseract-ocr-rus`); 3) типові шляхи встановлення на Windows, де
+    інсталятор не завжди дописує програму в PATH."""
+    bundled_dir = os.path.join(SCRIPT_DIR, "tesseract")
+    bundled_bin = os.path.join(
+        bundled_dir, "tesseract.exe" if os.name == "nt" else "tesseract")
+    if os.path.isfile(bundled_bin):
+        tessdata = os.path.join(bundled_dir, "tessdata")
+        if os.path.isdir(tessdata):
+            os.environ["TESSDATA_PREFIX"] = tessdata
+        return bundled_bin
+
+    system_bin = shutil.which("tesseract")
+    if system_bin:
+        return system_bin
+
+    if os.name == "nt":
+        for p in (
+            r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+            r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+        ):
+            if os.path.isfile(p):
+                return p
+    return None
+
+
+TESSERACT_CMD = find_tesseract_cmd()
+if TESSERACT_CMD:
+    pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
 
 
 # =========================================================================
@@ -198,21 +242,110 @@ def setup_gui_fonts(root):
         return None
 
 
-def ocr_lines_from_image(reader, pil_img, min_confidence=0.25):
-    """Запускає EasyOCR на зображенні сторінки та повертає список рядків:
-    {"text": str, "bbox": (x0,y0,x1,y1)} у пікселях зображення."""
-    arr = np.array(pil_img.convert("RGB"))
-    raw_results = reader.readtext(arr)
-    lines = []
-    for bbox_points, text, conf in raw_results:
-        text = text.strip()
-        if not text or conf < min_confidence:
-            continue
-        xs = [p[0] for p in bbox_points]
-        ys = [p[1] for p in bbox_points]
-        lines.append(
-            {"text": text, "bbox": (min(xs), min(ys), max(xs), max(ys))}
+def preprocess_for_ocr(pil_img):
+    """Готує зображення для Tesseract.
+
+    На відміну від EasyOCR (нейромережа, стійка до "сирого" кольорового
+    зображення), класичний Tesseract значно точніший на чистому
+    чорно-білому вході з високим контрастом. Тому: переводимо в
+    відтінки сірого й піднімаємо контраст (autocontrast). Якщо сторінка
+    дрібна (низький DPI) - додатково збільшуємо, бо для Tesseract
+    рекомендований мінімум ~300 DPI, а дрібні літери він банально не
+    розпізнає."""
+    from PIL import ImageOps
+    gray = ImageOps.grayscale(pil_img)
+    gray = ImageOps.autocontrast(gray, cutoff=1)
+    # Tesseract впевнено читає літери приблизно від ~20-30px заввишки.
+    # Якщо сторінка вузька (низький DPI/дрібний скан) - масштабуємо вгору.
+    if gray.width < 1600:
+        scale = 1600 / gray.width
+        gray = gray.resize(
+            (int(gray.width * scale), int(gray.height * scale)),
+            Image.LANCZOS,
         )
+    return gray
+
+
+def ocr_lines_from_image(pil_img, min_confidence=0):
+    """Запускає Tesseract на зображенні сторінки та повертає список рядків:
+    {"text": str, "bbox": (x0,y0,x1,y1)} у пікселях ОРИГІНАЛЬНОГО pil_img
+    (навіть якщо всередині для розпізнавання зображення масштабувалось).
+
+    Tesseract віддає результат по окремих словах (image_to_data), тому тут
+    слова групуються назад у рядки за (block_num, par_num, line_num) —
+    так само, як EasyOCR раніше віддавав готові рядки."""
+    if not TESSERACT_CMD:
+        raise RuntimeError(
+            "Не знайдено виконуваний файл Tesseract OCR. Встановіть його:\n"
+            "  Linux: sudo apt install tesseract-ocr tesseract-ocr-ukr tesseract-ocr-rus\n"
+            "  Windows: https://github.com/UB-Mannheim/tesseract/wiki"
+        )
+    proc_img = preprocess_for_ocr(pil_img)
+    # Масштаб між зображенням, яке реально пішло в OCR, і оригіналом —
+    # координати треба перевести назад, інакше рамки "поїдуть".
+    scale_back_x = pil_img.width / proc_img.width
+    scale_back_y = pil_img.height / proc_img.height
+
+    # --oem 1: лише LSTM-рушій (сучасніший і точніший за legacy/комбо).
+    # --psm 3: автоматична сегментація сторінки (типово для звичайних
+    # документів; якщо колись знадобиться - можна зробити налаштовуваним).
+    config = "--oem 1 --psm 3"
+    try:
+        data = pytesseract.image_to_data(
+            proc_img, lang=TESSERACT_LANGS, config=config,
+            output_type=pytesseract.Output.DICT,
+        )
+    except pytesseract.TesseractNotFoundError as e:
+        raise RuntimeError(f"Tesseract не запустився: {e}")
+    except pytesseract.TesseractError as e:
+        # Найчастіша причина - відсутня мовна модель (ukr.traineddata тощо).
+        raise RuntimeError(
+            f"Помилка Tesseract (можливо, не встановлено мовну модель "
+            f"ukr/rus/eng.traineddata): {e}"
+        )
+
+    grouped = {}
+    n = len(data.get("text", []))
+    for i in range(n):
+        text = (data["text"][i] or "").strip()
+        if not text:
+            continue
+        try:
+            conf = float(data["conf"][i])
+        except (TypeError, ValueError):
+            conf = -1.0
+        # conf == -1 у Tesseract - це не "низька впевненість", а службові
+        # рядки-контейнери (блок/абзац) без власного тексту; реальні слова
+        # завжди мають conf >= 0. min_confidence=0 тому означає "взяти
+        # все, що Tesseract взагалі розпізнав як слово" - раніше поріг 40
+        # відсікав чимало справжнього, але "невпевненого" тексту.
+        if conf < min_confidence:
+            continue
+        key = (data["block_num"][i], data["par_num"][i], data["line_num"][i])
+        x, y, w, h = (
+            data["left"][i], data["top"][i], data["width"][i], data["height"][i]
+        )
+        g = grouped.setdefault(
+            key, {"words": [], "x0": x, "y0": y, "x1": x + w, "y1": y + h})
+        g["words"].append(text)
+        g["x0"] = min(g["x0"], x)
+        g["y0"] = min(g["y0"], y)
+        g["x1"] = max(g["x1"], x + w)
+        g["y1"] = max(g["y1"], y + h)
+
+    lines = []
+    for key in sorted(grouped.keys()):
+        g = grouped[key]
+        text = " ".join(g["words"]).strip()
+        if not text:
+            continue
+        lines.append({
+            "text": text,
+            "bbox": (
+                g["x0"] * scale_back_x, g["y0"] * scale_back_y,
+                g["x1"] * scale_back_x, g["y1"] * scale_back_y,
+            ),
+        })
     return lines
 
 
@@ -266,13 +399,10 @@ def process_pdf(
     output_dir,
     dpi,
     make_searchable,
-    translate_targets,   # список кодів мов deep-translator, напр. ["uk", "ru"]
+    translate_targets,   # список кодів мов deep-translator, напр. ["uk", "ru", "en"]
     font_path,
     log_fn,
     cancel_event,
-    reader=None,         # easyocr.Reader або None, якщо OCR ще не потрібен
-    get_reader=None,     # callable() -> reader; lazy-завантаження при fallback OCR
-    force_ocr=False,     # True = завжди розпізнавати наново, ігноруючи текстовий шар PDF
 ):
     """Обробляє один PDF-файл: OCR + (опційно) створення searchable PDF
     та перекладених PDF. log_fn(str) - для виводу повідомлень у GUI."""
@@ -295,15 +425,6 @@ def process_pdf(
         lang: GoogleTranslator(source="auto", target=lang) for lang in translate_targets
     }
 
-    def ensure_reader():
-        nonlocal reader
-        if reader is None:
-            if get_reader is None:
-                raise RuntimeError(
-                    "OCR потрібен, але модель розпізнавання не завантажена.")
-            reader = get_reader()
-        return reader
-
     for page_index in range(n_pages):
         if cancel_event.is_set():
             raise ProcessingCancelled()
@@ -320,24 +441,18 @@ def process_pdf(
 
         lines = []
         if make_searchable or translate_targets:
-            # 1) Якщо не увімкнено примусовий OCR — спершу пробуємо взяти
-            #    вже наявний текстовий шар PDF. Це стосується ОБОХ режимів
-            #    (і "розпізнаваний PDF", і "переклад"), а не лише перекладу,
-            #    як було раніше. Саме тут ховався головний баг: раніше для
-            #    "розпізнаваного PDF" OCR запускався на кожній сторінці
-            #    безумовно, навіть коли текст уже був у файлі.
-            if not force_ocr:
-                lines = extract_lines_from_page(page)
+            # Спершу пробуємо взяти вже наявний текстовий шар PDF (швидко,
+            # без OCR). Якщо його немає - розпізнаємо зображення сторінки.
+            lines = extract_lines_from_page(page)
             if lines:
                 log_fn(
                     f"[{base_name}] Сторінка {page_index + 1}/{n_pages}: "
                     f"текст з PDF ({len(lines)} рядків), OCR пропущено")
             else:
-                reason = "примусовий режим OCR" if force_ocr else "немає текстового шару"
                 log_fn(
                     f"[{base_name}] Сторінка {page_index + 1}/{n_pages}: "
-                    f"{reason} — розпізнавання (OCR)...")
-                lines = ocr_lines_from_image(ensure_reader(), pil_img)
+                    f"немає текстового шару — розпізнавання (OCR)...")
+                lines = ocr_lines_from_image(pil_img)
 
         # ---------- 1) Розпізнаваний PDF (той самий вигляд + невидимий текст) ----------
         if out_searchable is not None:
@@ -417,22 +532,32 @@ def process_pdf(
                     except Exception as e:
                         log_fn(f"  [!] Пропущено рядок (переклад {lang}): {e}")
 
+        # Явно звільняємо памʼять цієї сторінки перед переходом до наступної.
+        # На довгих документах / слабких машинах це помітно знижує пік
+        # споживання RAM: без цього великі растрові зображення сторінок і
+        # внутрішній кеш MuPDF накопичуються протягом усього файлу.
+        del pix, pil_img, img_bytes, lines
+        page = None
+        fitz.TOOLS.store_shrink(100)
+        gc.collect()
+
     os.makedirs(output_dir, exist_ok=True)
     saved_files = []
 
     if out_searchable is not None:
         out_path = os.path.join(output_dir, f"{base_name}_searchable.pdf")
-        out_searchable.save(out_path)
+        out_searchable.save(out_path, garbage=3, deflate=True)
         out_searchable.close()
         saved_files.append(out_path)
 
     for lang in translate_targets:
         out_path = os.path.join(output_dir, f"{base_name}_{lang}.pdf")
-        out_translated[lang].save(out_path)
+        out_translated[lang].save(out_path, garbage=3, deflate=True)
         out_translated[lang].close()
         saved_files.append(out_path)
 
     doc.close()
+    gc.collect()
     return saved_files
 
 
@@ -440,26 +565,19 @@ def process_pdf(
 #  GUI
 # =========================================================================
 
-# (назва для відображення, код мови EasyOCR)
-OCR_LANGS = [
-    ("Українська", "uk"),
-    ("Російська", "ru"),
-    ("Англійська", "en"),
-]
-
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("PDF-manager: OCR + переклад")
+        # Мінімальний розумний розмір "про запас" - реальний розмір нижче
+        # підганяється під фактичний вміст, тож це лише стартова заглушка.
         self.geometry("780x680")
-        self.minsize(700, 580)
 
         self.files = []
         self.log_queue = queue.Queue()
         self.cancel_event = threading.Event()
         self.worker_thread = None
-        self.reader_cache = {}  # {(tuple(sorted(langs)), gpu): easyocr.Reader}
 
         # Діалоги вибору файлів за замовчуванням відкриваються в корені
         # диска (Linux: "/", Windows: "C:\\"), а далі запам'ятовують
@@ -468,7 +586,25 @@ class App(tk.Tk):
 
         self.gui_font = setup_gui_fonts(self)
         self._build_ui()
+        self._fit_window_to_content()
         self.after(150, self._poll_log_queue)
+
+    def _fit_window_to_content(self):
+        """Підганяє розмір вікна під фактично потрібний розмір усіх
+        віджетів, а не під захардкоджені пікселі. Так вікно завжди
+        вміщує всі елементи, навіть якщо їх склад зміниться в майбутньому
+        (додасться/зникне якийсь рядок налаштувань тощо)."""
+        self.update_idletasks()
+        req_w = self.winfo_reqwidth() + 20
+        req_h = self.winfo_reqheight() + 20
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+        # Не даємо вікну вилізти за межі екрана (напр. на маленьких ноутах) -
+        # у такому разі просто дамо йому проскролитись/стиснутись природно.
+        w = min(req_w, screen_w - 60)
+        h = min(req_h, screen_h - 80)
+        self.geometry(f"{w}x{h}")
+        self.minsize(min(w, 700), min(h, 560))
 
     # ---------------- UI ----------------
     def _build_ui(self):
@@ -499,57 +635,35 @@ class App(tk.Tk):
         ttk.Button(btns, text="Очистити список",
                    command=self.clear_files).pack(fill="x", pady=2)
 
-        frm_opts = ttk.LabelFrame(self, text="2. Мови розпізнавання (OCR)")
+        frm_opts = ttk.LabelFrame(self, text="2. Розпізнавання (OCR)")
         frm_opts.pack(fill="x", **pad)
 
         ttk.Label(
             frm_opts,
-            text="Яку(і) мову(и) шукати в тексті оригіналу (потрібно для розпізнаваного PDF\n"
-            "або для сканів без текстового шару при перекладі):",
+            text="Розпізнавання тексту (Tesseract) працює одразу для "
+                 "української, російської та англійської — вибір мов не потрібен.",
         ).grid(row=0, column=0, columnspan=4, sticky="w", **pad)
-        self.ocr_lang_vars = {}
-        col = 0
-        for label, code in OCR_LANGS:
-            var = tk.BooleanVar(value=True)  # усі увімкнені за замовчуванням
-            self.ocr_lang_vars[code] = var
-            ttk.Checkbutton(frm_opts, text=label, variable=var).grid(
-                row=1, column=col, sticky="w", padx=12, pady=2
-            )
-            col += 1
 
-        ttk.Label(frm_opts, text="DPI рендерингу:").grid(
-            row=2, column=0, sticky="w", **pad)
+        ttk.Label(frm_opts, text="DPI рендерингу (більше = точніше OCR, менше = швидше):").grid(
+            row=1, column=0, sticky="w", **pad)
         self.dpi_var = tk.IntVar(value=300)
         ttk.Spinbox(frm_opts, from_=150, to=600, increment=50, textvariable=self.dpi_var, width=6).grid(
-            row=2, column=1, sticky="w", **pad
+            row=1, column=1, sticky="w", **pad
         )
-
-        self.gpu_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            frm_opts, text="Використовувати GPU, якщо доступно (прискорює розпізнавання)",
-            variable=self.gpu_var,
-        ).grid(row=3, column=0, columnspan=4, sticky="w", **pad)
-
-        self.force_ocr_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            frm_opts,
-            text="Завжди розпізнавати наново (OCR), навіть якщо в PDF вже є текстовий шар",
-            variable=self.force_ocr_var,
-        ).grid(row=4, column=0, columnspan=4, sticky="w", **pad)
 
         ttk.Label(
             frm_opts,
-            text="Шрифт з кирилицею (необов'язково — за замовчуванням\nвикористовується вбудований DejaVu Sans):",
-        ).grid(row=5, column=0, columnspan=2, sticky="w", **pad)
+            text="Шрифт з кирилицею (необов'язково, за замовчуванням — вбудований DejaVu Sans):",
+        ).grid(row=2, column=0, columnspan=4, sticky="w", **pad)
         self.font_var = tk.StringVar(value="")
-        font_entry_kwargs = {"textvariable": self.font_var, "width": 40}
+        font_entry_kwargs = {"textvariable": self.font_var}
         if entry_font:
             font_entry_kwargs["font"] = entry_font
-        tk.Entry(frm_opts, **font_entry_kwargs).grid(
-            row=5, column=2, sticky="w", **pad
-        )
+        font_entry = tk.Entry(frm_opts, **font_entry_kwargs)
+        font_entry.grid(row=3, column=0, columnspan=3, sticky="ew", **pad)
         ttk.Button(frm_opts, text="Огляд...", command=self.choose_font).grid(
-            row=5, column=3, sticky="w", **pad)
+            row=3, column=3, sticky="w", **pad)
+        frm_opts.columnconfigure(0, weight=1)
 
         frm_tasks = ttk.LabelFrame(self, text="3. Що створити")
         frm_tasks.pack(fill="x", **pad)
@@ -570,6 +684,11 @@ class App(tk.Tk):
         ttk.Checkbutton(
             frm_tasks, text="Переклад російською (текст вставляється на місце оригіналу)", variable=self.var_ru
         ).grid(row=2, column=0, sticky="w", **pad)
+
+        self.var_en = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            frm_tasks, text="Переклад англійською (текст вставляється на місце оригіналу)", variable=self.var_en
+        ).grid(row=3, column=0, sticky="w", **pad)
 
         frm_out = ttk.LabelFrame(self, text="4. Папка для результатів")
         frm_out.pack(fill="x", **pad)
@@ -674,9 +793,20 @@ class App(tk.Tk):
             messagebox.showwarning(
                 "Немає файлів", "Спочатку додайте хоча б один PDF-файл.")
             return
-        if not (self.var_searchable.get() or self.var_uk.get() or self.var_ru.get()):
+        if not (self.var_searchable.get() or self.var_uk.get() or self.var_ru.get() or self.var_en.get()):
             messagebox.showwarning(
                 "Нічого робити", "Виберіть хоча б одну дію у розділі 3.")
+            return
+
+        if not TESSERACT_CMD:
+            messagebox.showerror(
+                "Tesseract не знайдено",
+                "Не вдалося знайти виконуваний файл Tesseract OCR.\n\n"
+                "Linux: sudo apt install tesseract-ocr tesseract-ocr-ukr tesseract-ocr-rus\n"
+                "Windows: https://github.com/UB-Mannheim/tesseract/wiki\n\n"
+                "OCR запуститься лише для сторінок без текстового шару — "
+                "якщо всі ваші PDF уже мають текст, можна продовжити і без нього.",
+            )
             return
 
         make_searchable = self.var_searchable.get()
@@ -685,23 +815,12 @@ class App(tk.Tk):
             translate_targets.append("uk")
         if self.var_ru.get():
             translate_targets.append("ru")
-
-        ocr_langs = [code for code,
-                     var in self.ocr_lang_vars.items() if var.get()]
-        if (make_searchable or translate_targets) and not ocr_langs:
-            messagebox.showwarning(
-                "Немає мов OCR",
-                "Виберіть хоча б одну мову OCR у розділі 2.\n\n"
-                "OCR запуститься лише для сторінок, де немає текстового шару "
-                "(або для всіх сторінок, якщо увімкнено «Завжди розпізнавати наново»).",
-            )
-            return
+        if self.var_en.get():
+            translate_targets.append("en")
 
         dpi = self.dpi_var.get()
         font_path = self.font_var.get().strip() or None
         out_dir = self.out_dir_var.get().strip()
-        gpu = self.gpu_var.get()
-        force_ocr = self.force_ocr_var.get()
 
         self.cancel_event.clear()
         self.start_btn.config(state="disabled")
@@ -711,8 +830,8 @@ class App(tk.Tk):
         self.worker_thread = threading.Thread(
             target=self._run_worker,
             args=(
-                list(self.files), out_dir, ocr_langs, gpu, dpi,
-                self.var_searchable.get(), translate_targets, font_path, force_ocr,
+                list(self.files), out_dir, dpi,
+                self.var_searchable.get(), translate_targets, font_path,
             ),
             daemon=True,
         )
@@ -722,50 +841,7 @@ class App(tk.Tk):
         self.cancel_event.set()
         self.log(">>> Скасування... зачекайте завершення поточної сторінки.")
 
-    def _get_reader(self, ocr_langs, gpu):
-        key = (tuple(sorted(ocr_langs)), gpu)
-        if key not in self.reader_cache:
-            self.log(
-                f"Завантаження моделі розпізнавання для мов {', '.join(ocr_langs)} "
-                f"(лише при першому запуску, потрібен інтернет)..."
-            )
-            self.reader_cache[key] = easyocr.Reader(
-                list(ocr_langs), gpu=gpu, verbose=False)
-            self.log("Модель готова.")
-        return self.reader_cache[key]
-
-    def _run_worker(self, files, out_dir, ocr_langs, gpu, dpi, make_searchable, translate_targets, font_path, force_ocr):
-        reader = None
-        reader_error = None
-
-        def get_reader():
-            nonlocal reader, reader_error
-            if reader is not None:
-                return reader
-            if reader_error is not None:
-                raise reader_error
-            try:
-                reader = self._get_reader(ocr_langs, gpu)
-                return reader
-            except Exception as exc:
-                reader_error = exc
-                raise
-
-        # Модель OCR гарантовано знадобиться відразу, лише якщо увімкнено
-        # примусовий OCR. В інших випадках вона підвантажується лениво —
-        # тільки якщо для конкретної сторінки справді немає текстового шару.
-        if force_ocr and (make_searchable or translate_targets):
-            try:
-                get_reader()
-            except Exception:
-                self.log(
-                    f"[ПОМИЛКА] Не вдалося завантажити модель розпізнавання:\n{traceback.format_exc()}")
-                self.start_btn.after(
-                    0, lambda: self.start_btn.config(state="normal"))
-                self.cancel_btn.after(
-                    0, lambda: self.cancel_btn.config(state="disabled"))
-                return
-
+    def _run_worker(self, files, out_dir, dpi, make_searchable, translate_targets, font_path):
         done = 0
         for path in files:
             if self.cancel_event.is_set():
@@ -782,9 +858,6 @@ class App(tk.Tk):
                     font_path=font_path,
                     log_fn=self.log,
                     cancel_event=self.cancel_event,
-                    reader=reader,
-                    get_reader=get_reader if ocr_langs else None,
-                    force_ocr=force_ocr,
                 )
                 for s in saved:
                     self.log(f"  -> Збережено: {s}")

@@ -6,10 +6,9 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "deep-translator>=1.11.4",
-    "easyocr>=1.7.2",
-    "numpy>=2.5.1",
     "pillow>=12.3.0",
     "pymupdf>=1.28.0",
+    "pytesseract>=0.3.13",
 ]
 
 [tool.uv]
@@ -19,3 +18,8 @@ dependencies = [
 # змушуємо uv завжди брати системний Python, у якого Tcl/Tk злінкований
 # нормально.
 python-preference = "only-system"
+
+# Примітка: після переходу з EasyOCR на Tesseract у проєкті більше немає
+# ані torch, ані numpy - pytesseract лише викликає окремий бінарник
+# tesseract через subprocess. Секцію [tool.uv.sources]/[[tool.uv.index]]
+# для CPU-only torch, яка тут була раніше, прибрано за непотрібністю.
