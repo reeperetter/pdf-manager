@@ -4,6 +4,8 @@ import sys
 import gc
 import glob
 import shutil
+import time
+import random
 import queue
 import threading
 import traceback
@@ -67,11 +69,9 @@ def find_unicode_font(user_path=None):
     return None
 
 
-# Фіксований набір мов для Tesseract: розпізнаємо одразу українську,
-# російську та англійську без вибору користувачем (не впливає ані на
-# швидкодію, ані на роботу самої програми — Tesseract просто одночасно
-# перевіряє символи всіх трьох мовних моделей).
-TESSERACT_LANGS = "ukr+rus+eng"
+# Мови для Tesseract фіксовані (без вибору користувачем): українська,
+# російська, англійська. Розбиті на два окремі OCR-проходи нижче
+# (_LATIN_LANGS / _CYRILLIC_LANGS) - див. ocr_lines_from_image.
 
 
 def find_tesseract_cmd():
@@ -266,45 +266,39 @@ def preprocess_for_ocr(pil_img):
     return gray
 
 
-def ocr_lines_from_image(pil_img, min_confidence=0):
-    """Запускає Tesseract на зображенні сторінки та повертає список рядків:
-    {"text": str, "bbox": (x0,y0,x1,y1)} у пікселях ОРИГІНАЛЬНОГО pil_img
-    (навіть якщо всередині для розпізнавання зображення масштабувалось).
+# Замість однієї об'єднаної мовної моделі "ukr+rus+eng" робимо ДВА окремі
+# проходи Tesseract - латиницею (eng) і кирилицею (ukr+rus) - і обираємо
+# кращий за впевненістю розпізнавання. Причина: кирилична "А", "Е", "Р",
+# "С", "Т", "Х" тощо піксель-у-піксель ідентичні латинським - при спільній
+# мовній моделі Tesseract час від часу віддає перевагу "не тому" алфавіту
+# для однаково виглядаючих літер (класична проблема мульти-скриптового
+# OCR), і в результат просочуються кириличні символи всередині
+# англійського тексту (і навпаки). Два окремі проходи усувають саму
+# можливість такої плутанини: "eng"-прохід фізично не вміє видати
+# кириличний символ.
+_LATIN_LANGS = "eng"
+_CYRILLIC_LANGS = "ukr+rus"
 
-    Tesseract віддає результат по окремих словах (image_to_data), тому тут
-    слова групуються назад у рядки за (block_num, par_num, line_num) —
-    так само, як EasyOCR раніше віддавав готові рядки."""
-    if not TESSERACT_CMD:
-        raise RuntimeError(
-            "Не знайдено виконуваний файл Tesseract OCR. Встановіть його:\n"
-            "  Linux: sudo apt install tesseract-ocr tesseract-ocr-ukr tesseract-ocr-rus\n"
-            "  Windows: https://github.com/UB-Mannheim/tesseract/wiki"
-        )
-    proc_img = preprocess_for_ocr(pil_img)
-    # Масштаб між зображенням, яке реально пішло в OCR, і оригіналом —
-    # координати треба перевести назад, інакше рамки "поїдуть".
-    scale_back_x = pil_img.width / proc_img.width
-    scale_back_y = pil_img.height / proc_img.height
 
-    # --oem 1: лише LSTM-рушій (сучасніший і точніший за legacy/комбо).
-    # --psm 3: автоматична сегментація сторінки (типово для звичайних
-    # документів; якщо колись знадобиться - можна зробити налаштовуваним).
-    config = "--oem 1 --psm 3"
+def _run_tesseract_pass(proc_img, lang, config):
     try:
-        data = pytesseract.image_to_data(
-            proc_img, lang=TESSERACT_LANGS, config=config,
-            output_type=pytesseract.Output.DICT,
-        )
+        return pytesseract.image_to_data(
+            proc_img, lang=lang, config=config, output_type=pytesseract.Output.DICT)
     except pytesseract.TesseractNotFoundError as e:
         raise RuntimeError(f"Tesseract не запустився: {e}")
     except pytesseract.TesseractError as e:
-        # Найчастіша причина - відсутня мовна модель (ukr.traineddata тощо).
         raise RuntimeError(
             f"Помилка Tesseract (можливо, не встановлено мовну модель "
-            f"ukr/rus/eng.traineddata): {e}"
+            f"{lang}.traineddata): {e}"
         )
 
-    grouped = {}
+
+def _pass_score(data):
+    """Оцінка якості проходу: середня впевненість, зважена кількістю
+    розпізнаних символів. Прохід у "чужому" скрипті для реального тексту
+    сторінки зазвичай або знаходить набагато менше валідних слів, або
+    впевненість помітно нижча (мовна модель не впізнає такі "слова")."""
+    weighted, total_chars = 0.0, 0
     n = len(data.get("text", []))
     for i in range(n):
         text = (data["text"][i] or "").strip()
@@ -314,36 +308,144 @@ def ocr_lines_from_image(pil_img, min_confidence=0):
             conf = float(data["conf"][i])
         except (TypeError, ValueError):
             conf = -1.0
-        # conf == -1 у Tesseract - це не "низька впевненість", а службові
-        # рядки-контейнери (блок/абзац) без власного тексту; реальні слова
-        # завжди мають conf >= 0. min_confidence=0 тому означає "взяти
-        # все, що Tesseract взагалі розпізнав як слово" - раніше поріг 40
-        # відсікав чимало справжнього, але "невпевненого" тексту.
-        if conf < min_confidence:
+        if conf < 0:
             continue
-        key = (data["block_num"][i], data["par_num"][i], data["line_num"][i])
-        x, y, w, h = (
-            data["left"][i], data["top"][i], data["width"][i], data["height"][i]
-        )
-        g = grouped.setdefault(
-            key, {"words": [], "x0": x, "y0": y, "x1": x + w, "y1": y + h})
-        g["words"].append(text)
-        g["x0"] = min(g["x0"], x)
-        g["y0"] = min(g["y0"], y)
-        g["x1"] = max(g["x1"], x + w)
-        g["y1"] = max(g["y1"], y + h)
+        weighted += conf * len(text)
+        total_chars += len(text)
+    if total_chars == 0:
+        return -1.0
+    return weighted / total_chars
 
-    lines = []
-    for key in sorted(grouped.keys()):
-        g = grouped[key]
-        text = " ".join(g["words"]).strip()
+
+def _extract_words(data, min_confidence):
+    """Дістає з сирого виводу Tesseract список слів з координатами,
+    відкидаючи порожні/невпевнені записи. НЕ використовує block_num/
+    par_num/line_num з Tesseract - подальше групування в рядки робимо
+    самі (див. _group_words_into_lines), бо Tesseract у режимі
+    автосегментації (--psm 3) на сторінках зі складним макетом (фото +
+    дві колонки тексту) регулярно об'єднує в один "рядок" слова з різних
+    візуальних колонок, що опинились на одній висоті."""
+    words = []
+    n = len(data.get("text", []))
+    for i in range(n):
+        text = (data["text"][i] or "").strip()
         if not text:
             continue
+        try:
+            conf = float(data["conf"][i])
+        except (TypeError, ValueError):
+            conf = -1.0
+        if conf < min_confidence:
+            continue
+        words.append({
+            "text": text,
+            "x": data["left"][i], "y": data["top"][i],
+            "w": data["width"][i], "h": data["height"][i],
+        })
+    return words
+
+
+def _group_words_into_lines(words):
+    """Групує окремі слова (з координатами) у візуальні рядки самостійно,
+    не покладаючись на угруповання Tesseract.
+
+    1. Слова об'єднуються в рядок, якщо їхні вертикальні центри близькі
+       (в межах ~60% середньої висоти рядка) - це звичайне групування по
+       висоті.
+    2. Всередині кожного такого "рядка" слова далі розбиваються на
+       під-рядки там, де горизонтальний розрив між сусідніми словами
+       НАБАГАТО більший за типовий міжслівний проміжок у цьому ж рядку -
+       це і є межа між колонками, що випадково опинились на одній висоті.
+       Поріг адаптивний (рахується окремо для кожного рядка), тому працює
+       і для дрібного, і для великого шрифту."""
+    if not words:
+        return []
+
+    rows = []  # [{"words": [...], "y_sum": float, "count": int, "h_avg": float}]
+    for wd in sorted(words, key=lambda w: (w["y"], w["x"])):
+        y_center = wd["y"] + wd["h"] / 2
+        placed = False
+        for row in rows:
+            row_y_center = row["y_sum"] / row["count"]
+            if abs(y_center - row_y_center) < row["h_avg"] * 0.6:
+                row["words"].append(wd)
+                row["y_sum"] += y_center
+                row["count"] += 1
+                row["h_avg"] = sum(w["h"]
+                                    for w in row["words"]) / row["count"]
+                placed = True
+                break
+        if not placed:
+            rows.append(
+                {"words": [wd], "y_sum": y_center, "count": 1, "h_avg": wd["h"]})
+
+    groups = []
+    for row in rows:
+        row_words = sorted(row["words"], key=lambda w: w["x"])
+        gaps = [
+            row_words[i]["x"] - (row_words[i - 1]["x"] + row_words[i - 1]["w"])
+            for i in range(1, len(row_words))
+        ]
+        median_gap = sorted(gaps)[len(gaps) // 2] if gaps else 0
+        avg_h = sum(w["h"] for w in row_words) / len(row_words)
+        # Поріг розриву-між-колонками: явно більший і за типовий пробіл
+        # у цьому рядку, і за приблизну ширину "нормального" пробілу
+        # відносно висоти шрифту.
+        split_threshold = max(median_gap * 4, avg_h * 2.5, 20)
+
+        current = [row_words[0]]
+        for i in range(1, len(row_words)):
+            prev = row_words[i - 1]
+            gap = row_words[i]["x"] - (prev["x"] + prev["w"])
+            if gap > split_threshold:
+                groups.append(current)
+                current = [row_words[i]]
+            else:
+                current.append(row_words[i])
+        groups.append(current)
+    return groups
+
+
+def ocr_lines_from_image(pil_img, min_confidence=0):
+    """Запускає Tesseract на зображенні сторінки та повертає список рядків:
+    {"text": str, "bbox": (x0,y0,x1,y1)} у пікселях оригінального pil_img."""
+    if not TESSERACT_CMD:
+        raise RuntimeError(
+            "Не знайдено виконуваний файл Tesseract OCR. Встановіть його:\n"
+            "  Linux: sudo apt install tesseract-ocr tesseract-ocr-ukr tesseract-ocr-rus\n"
+            "  Windows: https://github.com/UB-Mannheim/tesseract/wiki"
+        )
+    proc_img = preprocess_for_ocr(pil_img)
+    scale_back_x = pil_img.width / proc_img.width
+    scale_back_y = pil_img.height / proc_img.height
+
+    # --oem 1: лише LSTM-рушій (сучасніший і точніший за legacy/комбо).
+    # --psm 3: автоматична сегментація сторінки для координат слів (сама
+    # логіка об'єднання слів у рядки - наша власна, нижче).
+    config = "--oem 1 --psm 3"
+
+    data_latin = _run_tesseract_pass(proc_img, _LATIN_LANGS, config)
+    data_cyr = _run_tesseract_pass(proc_img, _CYRILLIC_LANGS, config)
+    data = data_latin if _pass_score(
+        data_latin) >= _pass_score(data_cyr) else data_cyr
+
+    words = _extract_words(data, min_confidence)
+    groups = _group_words_into_lines(words)
+
+    lines = []
+    for group in groups:
+        text = " ".join(w["text"] for w in group).strip()
+        if not text:
+            continue
+        x0 = min(w["x"] for w in group)
+        y0 = min(w["y"] for w in group)
+        x1 = max(w["x"] + w["w"] for w in group)
+        y1 = max(w["y"] + w["h"] for w in group)
         lines.append({
             "text": text,
             "bbox": (
-                g["x0"] * scale_back_x, g["y0"] * scale_back_y,
-                g["x1"] * scale_back_x, g["y1"] * scale_back_y,
+                x0 * scale_back_x, y0 * scale_back_y,
+                x1 * scale_back_x, y1 * scale_back_y,
             ),
         })
     return lines
@@ -394,6 +496,62 @@ class ProcessingCancelled(Exception):
     pass
 
 
+_ERROR_PAGE_MARKERS = (
+    "that's an error",
+    "that\u2019s an error",
+    "that's all we know",
+    "that\u2019s all we know",
+    "please try again later",
+    "<html",
+    "error 500",
+    "error 429",
+    "500.that",
+)
+
+
+def _looks_like_error_page(text):
+    """Google (неофіційний, безкоштовний translate.google.com) при
+    перевантаженні/бані по IP повертає не JSON з перекладом, а звичайну
+    HTML-сторінку помилки ("Error 500 ... That's an error ..."). deep-
+    translator іноді віддає це як звичайний рядок замість винятку - без
+    цієї перевірки таке сміття летіло прямо в PDF замість перекладу."""
+    if not text:
+        return False
+    low = text.lower()
+    return any(marker in low for marker in _ERROR_PAGE_MARKERS)
+
+
+def safe_translate(translator, text, log_fn=None, max_retries=4, base_delay=1.2):
+    """Перекладає один рядок з ретраями й експоненційною затримкою.
+    Якщо після всіх спроб переклад так і не вдався - повертає ОРИГІНАЛЬНИЙ
+    текст (краще лишити рядок оригіналом, ніж вставити в PDF сторінку
+    помилки Google)."""
+    if not text or not text.strip():
+        return text
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            result = translator.translate(text)
+        except Exception as e:
+            last_err = e
+            result = None
+        if result and not _looks_like_error_page(result):
+            return result
+        if result and _looks_like_error_page(result):
+            last_err = RuntimeError(
+                "Google повернув сторінку помилки (перевантажений/тимчасовий бан) "
+                "замість перекладу")
+        # Експоненційна затримка перед повторною спробою + невеликий джиттер,
+        # щоб не бити рівно по секунді знову в той самий ліміт.
+        time.sleep(base_delay * (2 ** attempt) + random.uniform(0, 0.5))
+    if log_fn:
+        log_fn(
+            f"  [!] Не вдалося перекласти рядок після {max_retries} спроб "
+            f"({last_err}); залишаю оригінальний текст."
+        )
+    return text
+
+
 def process_pdf(
     input_path,
     output_dir,
@@ -424,6 +582,10 @@ def process_pdf(
     translators = {
         lang: GoogleTranslator(source="auto", target=lang) for lang in translate_targets
     }
+    # Кеш на весь файл: однакові рядки (заголовки, футери, номери сторінок,
+    # повторювані фрази) перекладаються лише один раз - це і швидше, і
+    # менше запитів до Google (менше шансів наштовхнутись на ліміт).
+    translation_cache = {}  # {(lang, text): translated_text}
 
     for page_index in range(n_pages):
         if cancel_event.is_set():
@@ -485,20 +647,20 @@ def process_pdf(
                     f"[{base_name}] Сторінка {page_index + 1}/{n_pages}: переклад...")
                 texts_to_translate = [ln["text"] for ln in lines]
                 for lang in translate_targets:
-                    try:
-                        translations[lang] = translators[lang].translate_batch(
-                            texts_to_translate
-                        )
-                    except Exception as e:
-                        log_fn(
-                            f"  [!] Помилка перекладу ({lang}): {e}. Пробую по рядку...")
-                        result = []
-                        for t in texts_to_translate:
-                            try:
-                                result.append(translators[lang].translate(t))
-                            except Exception:
-                                result.append(t)
-                        translations[lang] = result
+                    result = []
+                    for t in texts_to_translate:
+                        cache_key = (lang, t)
+                        if cache_key in translation_cache:
+                            result.append(translation_cache[cache_key])
+                            continue
+                        tr = safe_translate(translators[lang], t, log_fn)
+                        translation_cache[cache_key] = tr
+                        result.append(tr)
+                        # Невелика пауза між запитами - неофіційний Google
+                        # Translate банить/повертає Error 500 саме при
+                        # частих запитах поспіль без жодних пауз.
+                        time.sleep(0.2)
+                    translations[lang] = result
 
             for lang in translate_targets:
                 tp = out_translated[lang].new_page(width=page_w, height=page_h)
