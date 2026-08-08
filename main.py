@@ -10,9 +10,7 @@ import queue
 import threading
 import traceback
 
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
-import tkinter.font as tkfont
+from PyQt5 import QtCore, QtGui, QtWidgets
 
 # ---- Перевірка зовнішніх залежностей з дружнім повідомленням ----
 MISSING = []
@@ -156,92 +154,6 @@ def line_to_pixel_bbox(line, scale_x, scale_y):
     return line["bbox"]
 
 
-def setup_gui_fonts(root):
-    """Налаштовує шрифт з кирилицею та охайнішу тему для Tk/ttk (особливо на Linux).
-
-    Повертає named-font (tkfont.Font) або None.
-
-    Створює шрифт за іменем родини, вже відомої системі через fontconfig
-    (`font create ... -family {Родина} -size N`), а не за шляхом до файлу —
-    Tk такого API не має. Також примусово ставить `tk scaling 1.0` і задає
-    розмір у пікселях — обхід відомого класу багів з розсинхроном
-    DPI/scaling на деяких Linux-системах."""
-    style = ttk.Style(root)
-
-    if os.name != "nt":
-        try:
-            root.tk.call("tk", "scaling", 1.0)
-        except tk.TclError:
-            pass
-        try:
-            available = style.theme_names()
-            for preferred in ("clam", "alt", "default"):
-                if preferred in available:
-                    style.theme_use(preferred)
-                    break
-        except tk.TclError:
-            pass
-
-    root.update_idletasks()  # без цього список родин часто неповний
-
-    if os.name == "nt":
-        return None
-
-    try:
-        families = sorted(set(tkfont.families(root)))
-    except Exception:
-        families = []
-
-    # Шукаємо першу відому "хорошу" родину з повним покриттям кирилиці.
-    candidates = [
-        "DejaVu Sans", "Noto Sans", "Liberation Sans", "Ubuntu",
-        "Cantarell", "FreeSans", "Droid Sans", "Open Sans", "Roboto",
-    ]
-    lower_map = {f.lower(): f for f in families}
-    chosen_family = None
-    for cand in candidates:
-        if cand.lower() in lower_map:
-            chosen_family = lower_map[cand.lower()]
-            break
-    if chosen_family is None:
-        # запасний варіант: перша не-bitmap/не-symbol родина зі списку
-        for f in families:
-            low = f.lower()
-            if low not in ("symbol", "wingdings", "webdings") and "fixed" not in low:
-                chosen_family = f
-                break
-
-    if not chosen_family:
-        return None
-
-    try:
-        # Розмір у ПІКСЕЛЯХ (від'ємне число) — обходить перерахунок point->pixel
-        # через (можливо помилковий) tk scaling.
-        app_font = tkfont.Font(root, family=chosen_family, size=-15)
-        root.option_add("*Font", app_font)
-        ttk_classes = (
-            ".", "TLabel", "TButton", "TCheckbutton", "TRadiobutton",
-            "TLabelframe", "TLabelframe.Label", "TEntry", "TCombobox",
-            "TSpinbox", "TNotebook", "TNotebook.Tab", "Treeview",
-            "Treeview.Heading", "TFrame", "TPanedwindow", "TProgressbar",
-        )
-        for element in ttk_classes:
-            try:
-                style.configure(element, font=app_font)
-            except tk.TclError:
-                pass
-        # Перевизначаємо й самі системні іменовані шрифти Tk, щоб охопити
-        # віджети, які їх використовують напряму (Listbox, Text, Entry).
-        for name in ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont"):
-            try:
-                tkfont.nametofont(name).configure(family=chosen_family, size=-15)
-            except tk.TclError:
-                pass
-        return app_font
-    except tk.TclError:
-        return None
-
-
 def preprocess_for_ocr(pil_img):
     """Готує зображення для Tesseract.
 
@@ -361,7 +273,8 @@ def _group_words_into_lines(words):
     if not words:
         return []
 
-    rows = []  # [{"words": [...], "y_sum": float, "count": int, "h_avg": float}]
+    # [{"words": [...], "y_sum": float, "count": int, "h_avg": float}]
+    rows = []
     for wd in sorted(words, key=lambda w: (w["y"], w["x"])):
         y_center = wd["y"] + wd["h"] / 2
         placed = False
@@ -372,7 +285,7 @@ def _group_words_into_lines(words):
                 row["y_sum"] += y_center
                 row["count"] += 1
                 row["h_avg"] = sum(w["h"]
-                                    for w in row["words"]) / row["count"]
+                                   for w in row["words"]) / row["count"]
                 placed = True
                 break
         if not placed:
@@ -468,24 +381,49 @@ def fit_fontsize(text, rect_width, rect_height, fontfile, max_size=None):
     return size
 
 
-def sample_bg_color(pil_img, bbox, pad=3):
-    """Пробує визначити колір фону біля текстового блоку (для замальовування)."""
+def sample_bg_color(pil_img, bbox, pad=4):
+    """Визначає колір фону навколо текстового блоку (для замальовування
+    оригінального тексту перед вставкою перекладу).
+
+    Семплює вузькі смужки одразу НАД, ПІД, ЛІВОРУЧ і ПРАВОРУЧ від bbox
+    (а не крихітну ділянку в одній точці) і бере МЕДІАНУ по кожному
+    каналу кольору. Медіана, а не середнє, - щоб один випадково
+    захоплений темний піксель (краєчок сусіднього рядка, тінь) не тягнув
+    колір у неправильний бік: на однотонному фоні медіана й середнє
+    збігаються, а на "забрудненому" - медіана явно точніша."""
     x0, y0, x1, y1 = bbox
     w, h = pil_img.size
-    sx = max(0, int(x0) - pad)
-    sy = max(0, int(y0) - pad)
-    ex = min(w, int(x0) + 4)
-    ey = min(h, int(y0))
-    if ex <= sx or ey <= sy:
+    x0i, y0i, x1i, y1i = int(x0), int(y0), int(x1), int(y1)
+
+    strips = [
+        (x0i, max(0, y0i - pad), x1i, y0i),           # над текстом
+        (x0i, y1i, x1i, min(h, y1i + pad)),            # під текстом
+        (max(0, x0i - pad), y0i, x0i, y1i),            # ліворуч
+        (x1i, y0i, min(w, x1i + pad), y1i),            # праворуч
+    ]
+
+    samples_r, samples_g, samples_b = [], [], []
+    for sx, sy, ex, ey in strips:
+        if ex <= sx or ey <= sy:
+            continue
+        crop = pil_img.crop((sx, sy, ex, ey)).convert("RGB")
+        for p in crop.getdata():
+            samples_r.append(p[0])
+            samples_g.append(p[1])
+            samples_b.append(p[2])
+
+    if not samples_r:
         return (1, 1, 1)
-    crop = pil_img.crop((sx, sy, ex, ey)).convert("RGB")
-    pixels = list(crop.getdata())
-    if not pixels:
-        return (1, 1, 1)
-    r = sum(p[0] for p in pixels) / len(pixels)
-    g = sum(p[1] for p in pixels) / len(pixels)
-    b = sum(p[2] for p in pixels) / len(pixels)
-    return (r / 255, g / 255, b / 255)
+
+    def median(vals):
+        vals = sorted(vals)
+        n = len(vals)
+        mid = n // 2
+        if n % 2:
+            return vals[mid]
+        return (vals[mid - 1] + vals[mid]) / 2
+
+    return (median(samples_r) / 255, median(samples_g) / 255, median(samples_b) / 255)
 
 
 # =========================================================================
@@ -557,7 +495,8 @@ def process_pdf(
     output_dir,
     dpi,
     make_searchable,
-    translate_targets,   # список кодів мов deep-translator, напр. ["uk", "ru", "en"]
+    # список кодів мов deep-translator, напр. ["uk", "ru", "en"]
+    translate_targets,
     font_path,
     log_fn,
     cancel_event,
@@ -669,6 +608,13 @@ def process_pdf(
                     continue
                 translated_lines = translations[lang]
                 for line, tr_text in zip(lines, translated_lines):
+                    orig_text = line["text"].strip()
+                    tr_text_stripped = (tr_text or "").strip()
+                    if tr_text_stripped.lower() == orig_text.lower():
+                        # Переклад ідентичний оригіналу (номери, коди,
+                        # власні назви тощо) - нема сенсу замальовувати
+                        # й переписувати те саме, це тільки псує вигляд.
+                        continue
                     rect = line_to_rect(line, scale_x, scale_y)
                     if rect.is_empty or rect.width <= 0 or rect.height <= 0:
                         continue
@@ -728,241 +674,266 @@ def process_pdf(
 # =========================================================================
 
 
-class App(tk.Tk):
+class WorkerSignals(QtCore.QObject):
+    """Сигнали для безпечного оновлення GUI з фонового потоку обробки.
+    У Qt (на відміну від Tk) не можна напряму чіпати віджети з іншого
+    потоку - сигнали/слоти автоматично переносять виклик у головний
+    потік, тому саме через них тут і йде весь зв'язок з робочим потоком."""
+    log = QtCore.pyqtSignal(str)
+    progress = QtCore.pyqtSignal(int)
+    status = QtCore.pyqtSignal(str)
+    finished = QtCore.pyqtSignal()
+
+
+class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.title("PDF-manager: OCR + переклад")
-        # Мінімальний розумний розмір "про запас" - реальний розмір нижче
-        # підганяється під фактичний вміст, тож це лише стартова заглушка.
-        self.geometry("780x680")
+        self.setWindowTitle("PDF-manager: OCR + переклад")
 
         self.files = []
-        self.log_queue = queue.Queue()
         self.cancel_event = threading.Event()
         self.worker_thread = None
-
-        # Діалоги вибору файлів за замовчуванням відкриваються в корені
-        # диска (Linux: "/", Windows: "C:\\"), а далі запам'ятовують
-        # останню відкриту користувачем директорію.
+        # Діалоги вибору файлів за замовчуванням відкриваються в домашній
+        # директорії, а далі запам'ятовують останню відкриту користувачем.
         self.last_dir = os.path.expanduser("~")
 
-        self.gui_font = setup_gui_fonts(self)
-        self._build_ui()
-        self._fit_window_to_content()
-        self.after(150, self._poll_log_queue)
+        self.signals = WorkerSignals()
+        self.signals.log.connect(self._append_log)
+        self.signals.progress.connect(self._set_progress)
+        self.signals.status.connect(self._set_status)
+        self.signals.finished.connect(self._on_finished)
 
-    def _fit_window_to_content(self):
-        """Підганяє розмір вікна під фактично потрібний розмір усіх
-        віджетів, а не під захардкоджені пікселі. Так вікно завжди
-        вміщує всі елементи, навіть якщо їх склад зміниться в майбутньому
-        (додасться/зникне якийсь рядок налаштувань тощо)."""
-        self.update_idletasks()
-        req_w = self.winfo_reqwidth() + 20
-        req_h = self.winfo_reqheight() + 20
-        screen_w = self.winfo_screenwidth()
-        screen_h = self.winfo_screenheight()
-        # Не даємо вікну вилізти за межі екрана (напр. на маленьких ноутах) -
-        # у такому разі просто дамо йому проскролитись/стиснутись природно.
-        w = min(req_w, screen_w - 60)
-        h = min(req_h, screen_h - 80)
-        self.geometry(f"{w}x{h}")
-        self.minsize(min(w, 700), min(h, 560))
+        self._build_ui()
+        self.resize(self.sizeHint())
 
     # ---------------- UI ----------------
     def _build_ui(self):
-        pad = {"padx": 8, "pady": 4}
+        central = QtWidgets.QWidget()
+        self.setCentralWidget(central)
+        root_layout = QtWidgets.QVBoxLayout(central)
+        root_layout.setContentsMargins(12, 12, 12, 12)
+        root_layout.setSpacing(8)
 
-        frm_files = ttk.LabelFrame(self, text="1. Вхідні PDF-файли")
-        frm_files.pack(fill="x", **pad)
+        bold = QtGui.QFont()
+        bold.setBold(True)
 
-        entry_font = self.gui_font if self.gui_font else None
-        listbox_kwargs = {"height": 6, "selectmode": "extended"}
-        if entry_font:
-            listbox_kwargs["font"] = entry_font
-        self.listbox = tk.Listbox(frm_files, **listbox_kwargs)
-        self.listbox.pack(fill="x", padx=6, pady=6, side="left", expand=True)
-        scrollbar = ttk.Scrollbar(
-            frm_files, orient="vertical", command=self.listbox.yview)
-        scrollbar.pack(side="left", fill="y")
-        self.listbox.config(yscrollcommand=scrollbar.set)
+        # ---- Двоколонковий контейнер: зліва файли+вивід, справа налаштування ----
+        columns = QtWidgets.QHBoxLayout()
+        columns.setSpacing(10)
+        root_layout.addLayout(columns)
 
-        btns = ttk.Frame(frm_files)
-        btns.pack(side="left", padx=6)
-        ttk.Button(btns, text="Додати файли...",
-                   command=self.add_files).pack(fill="x", pady=2)
-        ttk.Button(btns, text="Додати папку...",
-                   command=self.add_folder).pack(fill="x", pady=2)
-        ttk.Button(btns, text="Видалити вибране",
-                   command=self.remove_selected).pack(fill="x", pady=2)
-        ttk.Button(btns, text="Очистити список",
-                   command=self.clear_files).pack(fill="x", pady=2)
+        left_col = QtWidgets.QVBoxLayout()
+        left_col.setSpacing(8)
+        columns.addLayout(left_col, 3)
 
-        frm_opts = ttk.LabelFrame(self, text="2. Розпізнавання (OCR)")
-        frm_opts.pack(fill="x", **pad)
+        right_col = QtWidgets.QVBoxLayout()
+        right_col.setSpacing(8)
+        columns.addLayout(right_col, 2)
 
-        ttk.Label(
-            frm_opts,
-            text="Розпізнавання тексту (Tesseract) працює одразу для "
-                 "української, російської та англійської — вибір мов не потрібен.",
-        ).grid(row=0, column=0, columnspan=4, sticky="w", **pad)
+        # ---- Ліва колонка: файли ----
+        grp_files = QtWidgets.QGroupBox("Вхідні PDF-файли")
+        grp_files.setFont(bold)
+        left_col.addWidget(grp_files)
+        files_layout = QtWidgets.QHBoxLayout(grp_files)
 
-        ttk.Label(frm_opts, text="DPI рендерингу (більше = точніше OCR, менше = швидше):").grid(
-            row=1, column=0, sticky="w", **pad)
-        self.dpi_var = tk.IntVar(value=300)
-        ttk.Spinbox(frm_opts, from_=150, to=600, increment=50, textvariable=self.dpi_var, width=6).grid(
-            row=1, column=1, sticky="w", **pad
+        self.listbox = QtWidgets.QListWidget()
+        self.listbox.setSelectionMode(
+            QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.listbox.setMinimumHeight(140)
+        files_layout.addWidget(self.listbox, 1)
+
+        btns = QtWidgets.QVBoxLayout()
+        files_layout.addLayout(btns)
+        btn_add_files = QtWidgets.QPushButton("Додати файли...")
+        btn_add_files.clicked.connect(self.add_files)
+        btn_add_folder = QtWidgets.QPushButton("Додати папку...")
+        btn_add_folder.clicked.connect(self.add_folder)
+        btn_remove = QtWidgets.QPushButton("Видалити вибране")
+        btn_remove.clicked.connect(self.remove_selected)
+        btn_clear = QtWidgets.QPushButton("Очистити список")
+        btn_clear.clicked.connect(self.clear_files)
+        for b in (btn_add_files, btn_add_folder, btn_remove, btn_clear):
+            btns.addWidget(b)
+        btns.addStretch(1)
+
+        # ---- Куди зберегти - під списком файлів, та сама колонка ----
+        grp_out = QtWidgets.QGroupBox("Куди зберегти результат")
+        grp_out.setFont(bold)
+        left_col.addWidget(grp_out)
+        out_layout = QtWidgets.QHBoxLayout(grp_out)
+        self.out_dir_edit = QtWidgets.QLineEdit(
+            os.path.join(os.path.expanduser("~"), "pdf_ocr_output")
         )
+        out_layout.addWidget(self.out_dir_edit, 1)
+        btn_out = QtWidgets.QPushButton("Огляд...")
+        btn_out.clicked.connect(self.choose_out_dir)
+        out_layout.addWidget(btn_out)
 
-        ttk.Label(
-            frm_opts,
-            text="Шрифт з кирилицею (необов'язково, за замовчуванням — вбудований DejaVu Sans):",
-        ).grid(row=2, column=0, columnspan=4, sticky="w", **pad)
-        self.font_var = tk.StringVar(value="")
-        font_entry_kwargs = {"textvariable": self.font_var}
-        if entry_font:
-            font_entry_kwargs["font"] = entry_font
-        font_entry = tk.Entry(frm_opts, **font_entry_kwargs)
-        font_entry.grid(row=3, column=0, columnspan=3, sticky="ew", **pad)
-        ttk.Button(frm_opts, text="Огляд...", command=self.choose_font).grid(
-            row=3, column=3, sticky="w", **pad)
-        frm_opts.columnconfigure(0, weight=1)
+        left_col.addStretch(1)
 
-        frm_tasks = ttk.LabelFrame(self, text="3. Що створити")
-        frm_tasks.pack(fill="x", **pad)
+        # ---- Права колонка: налаштування OCR ----
+        grp_opts = QtWidgets.QGroupBox("Розпізнавання (OCR)")
+        grp_opts.setFont(bold)
+        right_col.addWidget(grp_opts)
+        opts_layout = QtWidgets.QGridLayout(grp_opts)
 
-        self.var_searchable = tk.BooleanVar(value=True)
-        ttk.Checkbutton(
-            frm_tasks,
-            text="Розпізнаваний PDF (той самий вигляд, текст можна виділяти)",
-            variable=self.var_searchable,
-        ).grid(row=0, column=0, sticky="w", **pad)
+        hint = QtWidgets.QLabel(
+            "Розпізнає укр./рос./англ. одночасно - вибір мов не потрібен.")
+        hint.setStyleSheet("color: #666666;")
+        hint.setWordWrap(True)
+        opts_layout.addWidget(hint, 0, 0, 1, 3)
 
-        self.var_uk = tk.BooleanVar(value=True)
-        ttk.Checkbutton(
-            frm_tasks, text="Переклад українською (текст вставляється на місце оригіналу)", variable=self.var_uk
-        ).grid(row=1, column=0, sticky="w", **pad)
+        opts_layout.addWidget(QtWidgets.QLabel("DPI:"), 1, 0)
+        self.dpi_spin = QtWidgets.QSpinBox()
+        self.dpi_spin.setRange(150, 600)
+        self.dpi_spin.setSingleStep(50)
+        self.dpi_spin.setValue(300)
+        opts_layout.addWidget(self.dpi_spin, 1, 1)
+        dpi_hint = QtWidgets.QLabel("більше = точніше, менше = швидше")
+        dpi_hint.setStyleSheet("color: #666666;")
+        opts_layout.addWidget(dpi_hint, 1, 2)
 
-        self.var_ru = tk.BooleanVar(value=True)
-        ttk.Checkbutton(
-            frm_tasks, text="Переклад російською (текст вставляється на місце оригіналу)", variable=self.var_ru
-        ).grid(row=2, column=0, sticky="w", **pad)
+        opts_layout.addWidget(QtWidgets.QLabel("Шрифт:"), 2, 0)
+        self.font_edit = QtWidgets.QLineEdit()
+        opts_layout.addWidget(self.font_edit, 2, 1)
+        btn_font = QtWidgets.QPushButton("Огляд...")
+        btn_font.setSizePolicy(
+            QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        btn_font.clicked.connect(self.choose_font)
+        opts_layout.addWidget(btn_font, 2, 2)
+        font_hint = QtWidgets.QLabel(
+            "необов'язково - типово вбудований DejaVu Sans")
+        font_hint.setStyleSheet("color: #666666;")
+        opts_layout.addWidget(font_hint, 3, 0, 1, 3)
+        opts_layout.setColumnStretch(1, 1)
 
-        self.var_en = tk.BooleanVar(value=True)
-        ttk.Checkbutton(
-            frm_tasks, text="Переклад англійською (текст вставляється на місце оригіналу)", variable=self.var_en
-        ).grid(row=3, column=0, sticky="w", **pad)
+        # ---- Що створити ----
+        grp_tasks = QtWidgets.QGroupBox("Що створити")
+        grp_tasks.setFont(bold)
+        right_col.addWidget(grp_tasks)
+        tasks_layout = QtWidgets.QVBoxLayout(grp_tasks)
 
-        frm_out = ttk.LabelFrame(self, text="4. Папка для результатів")
-        frm_out.pack(fill="x", **pad)
-        self.out_dir_var = tk.StringVar(
-            value=os.path.join(os.path.expanduser("~"), "pdf_ocr_output")
-        )
-        out_entry_kwargs = {"textvariable": self.out_dir_var, "width": 60}
-        if entry_font:
-            out_entry_kwargs["font"] = entry_font
-        tk.Entry(frm_out, **out_entry_kwargs).pack(
-            side="left", padx=6, pady=6, fill="x", expand=True
-        )
-        ttk.Button(frm_out, text="Огляд...", command=self.choose_out_dir).pack(
-            side="left", padx=6)
+        self.chk_searchable = QtWidgets.QCheckBox(
+            "Розпізнаваний PDF (виділюваний текст)")
+        self.chk_searchable.setChecked(True)
+        self.chk_uk = QtWidgets.QCheckBox("Переклад українською")
+        self.chk_uk.setChecked(True)
+        self.chk_ru = QtWidgets.QCheckBox("Переклад російською")
+        self.chk_ru.setChecked(True)
+        self.chk_en = QtWidgets.QCheckBox("Переклад англійською")
+        self.chk_en.setChecked(True)
+        for c in (self.chk_searchable, self.chk_uk, self.chk_ru, self.chk_en):
+            tasks_layout.addWidget(c)
 
-        frm_run = ttk.Frame(self)
-        frm_run.pack(fill="x", **pad)
-        self.start_btn = ttk.Button(
-            frm_run, text="Почати обробку", command=self.start_processing)
-        self.start_btn.pack(side="left", padx=6)
-        self.cancel_btn = ttk.Button(
-            frm_run, text="Скасувати", command=self.cancel_processing, state="disabled")
-        self.cancel_btn.pack(side="left", padx=6)
+        right_col.addStretch(1)
 
-        self.progress = ttk.Progressbar(self, mode="determinate")
-        self.progress.pack(fill="x", **pad)
+        # ---- Запуск + прогрес (на всю ширину, під двома колонками) ----
+        run_layout = QtWidgets.QHBoxLayout()
+        root_layout.addLayout(run_layout)
+        self.start_btn = QtWidgets.QPushButton("Почати обробку")
+        self.start_btn.clicked.connect(self.start_processing)
+        run_layout.addWidget(self.start_btn)
+        self.cancel_btn = QtWidgets.QPushButton("Скасувати")
+        self.cancel_btn.setEnabled(False)
+        self.cancel_btn.clicked.connect(self.cancel_processing)
+        run_layout.addWidget(self.cancel_btn)
+        self.status_label = QtWidgets.QLabel("Готово")
+        run_layout.addWidget(self.status_label)
+        run_layout.addStretch(1)
 
-        frm_log = ttk.LabelFrame(self, text="Журнал")
-        frm_log.pack(fill="both", expand=True, **pad)
-        log_kwargs = {"height": 12, "state": "disabled", "wrap": "word"}
-        if entry_font:
-            log_kwargs["font"] = entry_font
-        self.log_text = tk.Text(frm_log, **log_kwargs)
-        self.log_text.pack(fill="both", expand=True, padx=6, pady=6)
+        self.progress = QtWidgets.QProgressBar()
+        self.progress.setTextVisible(False)
+        root_layout.addWidget(self.progress)
+
+        # ---- Журнал ----
+        grp_log = QtWidgets.QGroupBox("Журнал")
+        grp_log.setFont(bold)
+        root_layout.addWidget(grp_log, 1)
+        log_layout = QtWidgets.QVBoxLayout(grp_log)
+        self.log_text = QtWidgets.QPlainTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setMinimumHeight(160)
+        log_layout.addWidget(self.log_text)
 
     # ---------------- Дії ----------------
     def add_files(self):
-        paths = filedialog.askopenfilenames(
-            title="Виберіть PDF-файли", filetypes=[("PDF files", "*.pdf")],
-            initialdir=self.last_dir,
-        )
+        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
+            self, "Виберіть PDF-файли", self.last_dir, "PDF files (*.pdf)")
         if paths:
             self.last_dir = os.path.dirname(paths[0])
         for p in paths:
             if p not in self.files:
                 self.files.append(p)
-                self.listbox.insert("end", p)
+                self.listbox.addItem(p)
 
     def add_folder(self):
-        folder = filedialog.askdirectory(
-            title="Виберіть папку з PDF-файлами", initialdir=self.last_dir)
+        folder = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Виберіть папку з PDF-файлами", self.last_dir)
         if folder:
             self.last_dir = folder
             for p in sorted(glob.glob(os.path.join(folder, "*.pdf"))):
                 if p not in self.files:
                     self.files.append(p)
-                    self.listbox.insert("end", p)
+                    self.listbox.addItem(p)
 
     def remove_selected(self):
-        selected = list(self.listbox.curselection())
-        for index in reversed(selected):
-            self.listbox.delete(index)
+        for item in self.listbox.selectedItems():
+            index = self.listbox.row(item)
+            self.listbox.takeItem(index)
             del self.files[index]
 
     def clear_files(self):
         self.files.clear()
-        self.listbox.delete(0, "end")
+        self.listbox.clear()
 
     def choose_font(self):
-        path = filedialog.askopenfilename(
-            title="Виберіть TTF-шрифт з кирилицею", filetypes=[("TrueType Font", "*.ttf")],
-            initialdir=self.last_dir,
-        )
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Виберіть TTF-шрифт з кирилицею", self.last_dir, "TrueType Font (*.ttf)")
         if path:
-            self.font_var.set(path)
+            self.font_edit.setText(path)
             self.last_dir = os.path.dirname(path)
 
     def choose_out_dir(self):
-        folder = filedialog.askdirectory(
-            title="Папка для результатів", initialdir=self.last_dir)
+        folder = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Папка для результатів", self.last_dir)
         if folder:
-            self.out_dir_var.set(folder)
+            self.out_dir_edit.setText(folder)
             self.last_dir = folder
 
+    # ---------------- Лог/прогрес (виконуються в головному потоці - слоти) ----------------
+    def _append_log(self, msg):
+        self.log_text.appendPlainText(msg)
+
+    def _set_progress(self, value):
+        self.progress.setValue(value)
+
+    def _set_status(self, text):
+        self.status_label.setText(text)
+
+    def _on_finished(self):
+        self.start_btn.setEnabled(True)
+        self.cancel_btn.setEnabled(False)
+
     def log(self, msg):
-        self.log_queue.put(msg)
+        # Викликається з робочого потоку - сигнал безпечно переносить
+        # оновлення тексту в головний потік Qt.
+        self.signals.log.emit(msg)
 
-    def _poll_log_queue(self):
-        try:
-            while True:
-                msg = self.log_queue.get_nowait()
-                self.log_text.config(state="normal")
-                self.log_text.insert("end", msg + "\n")
-                self.log_text.see("end")
-                self.log_text.config(state="disabled")
-        except queue.Empty:
-            pass
-        self.after(150, self._poll_log_queue)
-
+    # ---------------- Обробка ----------------
     def start_processing(self):
         if not self.files:
-            messagebox.showwarning(
-                "Немає файлів", "Спочатку додайте хоча б один PDF-файл.")
+            QtWidgets.QMessageBox.warning(
+                self, "Немає файлів", "Спочатку додайте хоча б один PDF-файл.")
             return
-        if not (self.var_searchable.get() or self.var_uk.get() or self.var_ru.get() or self.var_en.get()):
-            messagebox.showwarning(
-                "Нічого робити", "Виберіть хоча б одну дію у розділі 3.")
+        if not (self.chk_searchable.isChecked() or self.chk_uk.isChecked()
+                or self.chk_ru.isChecked() or self.chk_en.isChecked()):
+            QtWidgets.QMessageBox.warning(
+                self, "Нічого робити", "Виберіть хоча б одну дію у розділі «Що створити».")
             return
 
         if not TESSERACT_CMD:
-            messagebox.showerror(
-                "Tesseract не знайдено",
+            QtWidgets.QMessageBox.critical(
+                self, "Tesseract не знайдено",
                 "Не вдалося знайти виконуваний файл Tesseract OCR.\n\n"
                 "Linux: sudo apt install tesseract-ocr tesseract-ocr-ukr tesseract-ocr-rus\n"
                 "Windows: https://github.com/UB-Mannheim/tesseract/wiki\n\n"
@@ -971,29 +942,31 @@ class App(tk.Tk):
             )
             return
 
-        make_searchable = self.var_searchable.get()
+        make_searchable = self.chk_searchable.isChecked()
         translate_targets = []
-        if self.var_uk.get():
+        if self.chk_uk.isChecked():
             translate_targets.append("uk")
-        if self.var_ru.get():
+        if self.chk_ru.isChecked():
             translate_targets.append("ru")
-        if self.var_en.get():
+        if self.chk_en.isChecked():
             translate_targets.append("en")
 
-        dpi = self.dpi_var.get()
-        font_path = self.font_var.get().strip() or None
-        out_dir = self.out_dir_var.get().strip()
+        dpi = self.dpi_spin.value()
+        font_path = self.font_edit.text().strip() or None
+        out_dir = self.out_dir_edit.text().strip()
 
         self.cancel_event.clear()
-        self.start_btn.config(state="disabled")
-        self.cancel_btn.config(state="normal")
-        self.progress.config(maximum=len(self.files), value=0)
+        self.start_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(True)
+        self.progress.setRange(0, len(self.files))
+        self.progress.setValue(0)
+        self.status_label.setText(f"Обробка: 0/{len(self.files)}")
 
         self.worker_thread = threading.Thread(
             target=self._run_worker,
             args=(
                 list(self.files), out_dir, dpi,
-                self.var_searchable.get(), translate_targets, font_path,
+                make_searchable, translate_targets, font_path,
             ),
             daemon=True,
         )
@@ -1001,10 +974,12 @@ class App(tk.Tk):
 
     def cancel_processing(self):
         self.cancel_event.set()
+        self.signals.status.emit("Скасування...")
         self.log(">>> Скасування... зачекайте завершення поточної сторінки.")
 
     def _run_worker(self, files, out_dir, dpi, make_searchable, translate_targets, font_path):
         done = 0
+        total = len(files)
         for path in files:
             if self.cancel_event.is_set():
                 self.log(">>> Обробку скасовано користувачем.")
@@ -1029,38 +1004,18 @@ class App(tk.Tk):
             except Exception:
                 self.log(f"[ПОМИЛКА] {path}:\n{traceback.format_exc()}")
             done += 1
-            self.progress.after(
-                0, lambda d=done: self.progress.config(value=d))
+            self.signals.progress.emit(done)
+            self.signals.status.emit(f"Обробка: {done}/{total}")
 
+        self.signals.status.emit("Готово")
         self.log("=== Готово ===")
-        self.start_btn.after(0, lambda: self.start_btn.config(state="normal"))
-        self.cancel_btn.after(
-            0, lambda: self.cancel_btn.config(state="disabled"))
-
-
-def _init_locale_for_linux_input():
-    """Явно вмикає UTF-8 локаль перед створенням вікна Tk.
-
-    На Linux ввід кирилиці в tk.Entry/tk.Text йде через систему X11 Input
-    Method (XIM) або через IBus/Fcitx поверх неї. Якщо процес Python
-    стартує з локаллю "C"/"POSIX" (типово, коли програму запускають не
-    з термінала, а, наприклад, через ярлик або .desktop-файл без
-    успадкованого середовища), Tk піднімає X-з'єднання ще до того, як
-    дізнається про UTF-8, і XIM просто не активується — тоді кирилицю
-    (і будь-яку не-ASCII розкладку) неможливо ввести в поля вводу, хоча
-    показати її на екрані (шрифтом) можна без проблем. Це НЕ баг у
-    самому коді програми, а особливість оточення, тому один виклик
-    setlocale тут допомагає лише частково: якщо не спрацює, потрібно
-    перевірити системну локаль і змінні GTK_IM_MODULE/XMODIFIERS
-    (див. коментар у README / повідомлення від Claude)."""
-    try:
-        import locale
-        locale.setlocale(locale.LC_ALL, "")
-    except Exception:
-        pass
+        self.signals.finished.emit()
 
 
 if __name__ == "__main__":
-    _init_locale_for_linux_input()
-    app = App()
-    app.mainloop()
+    QtWidgets.QApplication.setAttribute(
+        QtCore.Qt.AA_EnableHighDpiScaling, True)
+    app = QtWidgets.QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec_())

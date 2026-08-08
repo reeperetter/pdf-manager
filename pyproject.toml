@@ -9,17 +9,5 @@ dependencies = [
     "pillow>=12.3.0",
     "pymupdf>=1.28.0",
     "pytesseract>=0.3.13",
+    "PyQt5>=5.15.11",
 ]
-
-[tool.uv]
-# ВАЖЛИВО для tkinter-GUI: власні managed-білди Python від uv
-# (python-build-standalone) лінкують Tcl/Tk БЕЗ Xft/fontconfig, через що
-# кирилиця й нормальні шрифти в GUI ламаються. Тому для цього проєкту
-# змушуємо uv завжди брати системний Python, у якого Tcl/Tk злінкований
-# нормально.
-python-preference = "only-system"
-
-# Примітка: після переходу з EasyOCR на Tesseract у проєкті більше немає
-# ані torch, ані numpy - pytesseract лише викликає окремий бінарник
-# tesseract через subprocess. Секцію [tool.uv.sources]/[[tool.uv.index]]
-# для CPU-only torch, яка тут була раніше, прибрано за непотрібністю.
