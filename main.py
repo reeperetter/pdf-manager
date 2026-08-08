@@ -815,13 +815,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.chk_searchable = QtWidgets.QCheckBox(
             "Розпізнаваний PDF (виділюваний текст)")
-        self.chk_searchable.setChecked(True)
+        self.chk_searchable.setChecked(False)
         self.chk_uk = QtWidgets.QCheckBox("Переклад українською")
-        self.chk_uk.setChecked(True)
+        self.chk_uk.setChecked(False)
         self.chk_ru = QtWidgets.QCheckBox("Переклад російською")
-        self.chk_ru.setChecked(True)
+        self.chk_ru.setChecked(False)
         self.chk_en = QtWidgets.QCheckBox("Переклад англійською")
-        self.chk_en.setChecked(True)
+        self.chk_en.setChecked(False)
         for c in (self.chk_searchable, self.chk_uk, self.chk_ru, self.chk_en):
             tasks_layout.addWidget(c)
 
@@ -935,8 +935,9 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.critical(
                 self, "Tesseract не знайдено",
                 "Не вдалося знайти виконуваний файл Tesseract OCR.\n\n"
-                "Linux: sudo apt install tesseract-ocr tesseract-ocr-ukr tesseract-ocr-rus\n"
                 "Windows: https://github.com/UB-Mannheim/tesseract/wiki\n\n"
+                "Ubuntu: sudo apt install tesseract-ocr tesseract-ocr-ukr tesseract-ocr-rus\n"
+                "Fedora: sudo dnf install tesseract tesseract-langpack-eng tesseract-langpack-ukr tesseract-langpack-rus\n"
                 "OCR запуститься лише для сторінок без текстового шару — "
                 "якщо всі ваші PDF уже мають текст, можна продовжити і без нього.",
             )

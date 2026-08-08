@@ -1,7 +1,7 @@
 [project]
 name = "pdf-ocr-translator"
-version = "0.1.0"
-description = "Add your description here"
+version = "1.0.0"
+description = "OCR and translate PDF files using Tesseract and Deep Translator."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
