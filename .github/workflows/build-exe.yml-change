@@ -1,0 +1,115 @@
+name: Build EXE / Linux binary
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: 'Які платформи збирати'
+        required: true
+        default: 'both'
+        type: choice
+        options:
+          - both
+          - windows-only
+          - linux-only
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows
+          - os: ubuntu-22.04
+            name: linux
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Determine if this platform should build
+        id: check
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ] || \
+             [ "${{ inputs.platforms }}" == "both" ] || \
+             { [ "${{ inputs.platforms }}" == "windows-only" ] && [ "${{ matrix.os }}" == "windows-latest" ]; } || \
+             { [ "${{ inputs.platforms }}" == "linux-only" ] && [ "${{ matrix.os }}" == "ubuntu-22.04" ]; }; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout code
+        if: steps.check.outputs.run == 'true'
+        uses: actions/checkout@v4
+
+      - name: Set up Python (офіційна збірка - зі стандартним Tcl/Tk 8.6)
+        if: steps.check.outputs.run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: '.python-version'
+
+      - name: Install uv
+        if: steps.check.outputs.run == 'true'
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      # Кажемо uv не качати свою власну збірку Python (у якій на Linux -
+      # непідтримуваний ніде Tcl/Tk 9.0), а використати щойно встановлений
+      # офіційний Python вище.
+      - name: Configure uv to use system Python
+        if: steps.check.outputs.run == 'true'
+        shell: bash
+        run: echo "UV_PYTHON_PREFERENCE=only-system" >> "$GITHUB_ENV"
+
+      # На Linux потрібні системні пакети для tkinter - вони не ставляться через pip/uv
+      - name: Install Tkinter system package (Linux only)
+        if: steps.check.outputs.run == 'true' && matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk
+
+      - name: Install dependencies
+        if: steps.check.outputs.run == 'true'
+        run: uv sync
+
+      # ---- Збірка для Windows (.exe) ----
+      - name: Build EXE (Windows)
+        if: steps.check.outputs.run == 'true' && matrix.os == 'windows-latest'
+        run: |
+          uv run pyinstaller --onefile --windowed --name ProtocolProcessor `
+            --add-data "executors.txt;." `
+            protocol_processor.py
+
+      # ---- Збірка для Linux (звичайний бінарник) ----
+      - name: Build binary (Linux)
+        if: steps.check.outputs.run == 'true' && matrix.os == 'ubuntu-22.04'
+        run: |
+          uv run pyinstaller --onefile --windowed --name ProtocolProcessor \
+            --add-data "executors.txt:." \
+            protocol_processor.py
+
+      - name: Upload artifact
+        if: steps.check.outputs.run == 'true'True
+        uses: actions/upload-artifact@v4
+        with:
+          name: ProtocolProcessor-${{ matrix.name }}
+          path: |
+            dist/ProtocolProcessor.exe
+            dist/ProtocolProcessor
+          if-no-files-found: ignore
+
+      - name: Create GitHub Release
+        if: steps.check.outputs.run == 'true' && startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/ProtocolProcessor.exe
+            dist/ProtocolProcessor
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,7 +1,7 @@
 [project]
 name = "pdf-ocr-translator"
-version = "1.0.0"
-description = "OCR and translate PDF files using Tesseract and Deep Translator."
+version = "1.1.0"
+description = "OCR + переклад PDF (Tesseract, PyQt5, uk/ru/en)"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

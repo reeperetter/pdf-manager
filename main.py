@@ -19,7 +19,7 @@ try:
 except ImportError:
     MISSING.append("pymupdf")
 try:
-    from PIL import Image
+    from PIL import Image, ImageOps
 except ImportError:
     MISSING.append("pillow")
 try:
@@ -164,7 +164,6 @@ def preprocess_for_ocr(pil_img):
     дрібна (низький DPI) - додатково збільшуємо, бо для Tesseract
     рекомендований мінімум ~300 DPI, а дрібні літери він банально не
     розпізнає."""
-    from PIL import ImageOps
     gray = ImageOps.grayscale(pil_img)
     gray = ImageOps.autocontrast(gray, cutoff=1)
     # Tesseract впевнено читає літери приблизно від ~20-30px заввишки.
@@ -273,8 +272,7 @@ def _group_words_into_lines(words):
     if not words:
         return []
 
-    # [{"words": [...], "y_sum": float, "count": int, "h_avg": float}]
-    rows = []
+    rows = []  # [{"words": [...], "y_sum": float, "count": int, "h_avg": float}]
     for wd in sorted(words, key=lambda w: (w["y"], w["x"])):
         y_center = wd["y"] + wd["h"] / 2
         placed = False
@@ -285,7 +283,7 @@ def _group_words_into_lines(words):
                 row["y_sum"] += y_center
                 row["count"] += 1
                 row["h_avg"] = sum(w["h"]
-                                   for w in row["words"]) / row["count"]
+                                    for w in row["words"]) / row["count"]
                 placed = True
                 break
         if not placed:
@@ -430,6 +428,57 @@ def sample_bg_color(pil_img, bbox, pad=4):
 #  Основна логіка обробки одного PDF
 # =========================================================================
 
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp")
+
+
+def images_to_pdf(image_paths, output_path, log_fn=None, progress_fn=None, cancel_event=None):
+    """Збирає список файлів-зображень в один PDF (по сторінці на кожне).
+
+    Враховує EXIF-орієнтацію (`ImageOps.exif_transpose`) - без цього фото,
+    зняті на телефон "боком", лягали б у PDF перевернутими, бо камери
+    зазвичай зберігають кадр як є, а орієнтацію - окремим тегом, який
+    показує лише переглядач фото, а не сирий піксельний вміст файлу.
+
+    Розмір сторінки рахується з припущення, що зображення - скан/фото з
+    ефективною роздільністю ~200 DPI (розумний баланс для фото з
+    телефону; для точних сканів з відомим DPI можна буде додати вибір
+    цього значення в GUI пізніше, якщо знадобиться).
+
+    progress_fn(done, total), якщо передано, викликається після кожного
+    зображення - для оновлення прогрес-бару при виклику з фонового
+    потоку. cancel_event дозволяє перервати конвертацію (наприклад, при
+    випадковому перетягуванні сотень зображень)."""
+    assumed_dpi = 200
+    doc = fitz.open()
+    try:
+        for i, img_path in enumerate(image_paths):
+            if cancel_event is not None and cancel_event.is_set():
+                raise ProcessingCancelled()
+            img = Image.open(img_path)
+            img = ImageOps.exif_transpose(img)
+            img = img.convert("RGB")
+
+            w_pt = img.width * 72 / assumed_dpi
+            h_pt = img.height * 72 / assumed_dpi
+            page = doc.new_page(width=w_pt, height=h_pt)
+
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            page.insert_image(fitz.Rect(0, 0, w_pt, h_pt), stream=buf.getvalue())
+
+            if log_fn:
+                log_fn(
+                    f"  Додано сторінку {i + 1}/{len(image_paths)}: "
+                    f"{os.path.basename(img_path)}"
+                )
+            if progress_fn:
+                progress_fn(i + 1, len(image_paths))
+        doc.save(output_path, garbage=3, deflate=True)
+    finally:
+        doc.close()
+    return output_path
+
+
 class ProcessingCancelled(Exception):
     pass
 
@@ -495,8 +544,7 @@ def process_pdf(
     output_dir,
     dpi,
     make_searchable,
-    # список кодів мов deep-translator, напр. ["uk", "ru", "en"]
-    translate_targets,
+    translate_targets,   # список кодів мов deep-translator, напр. ["uk", "ru", "en"]
     font_path,
     log_fn,
     cancel_event,
@@ -674,6 +722,54 @@ def process_pdf(
 # =========================================================================
 
 
+
+class DropListWidget(QtWidgets.QListWidget):
+    """QListWidget з підтримкою перетягування файлів/папок мишею з
+    файлового менеджера прямо у список. Підтримує PDF-файли, папки
+    (тоді беруться всі *.pdf всередині) та зображення (jpg/png/...) -
+    для них окремий сигнал, бо їх спершу треба зібрати в PDF."""
+    filesDropped = QtCore.pyqtSignal(list)
+    imagesDropped = QtCore.pyqtSignal(list)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
+    def dropEvent(self, event):
+        if not event.mimeData().hasUrls():
+            super().dropEvent(event)
+            return
+        pdf_paths = []
+        image_paths = []
+        for url in event.mimeData().urls():
+            local = url.toLocalFile()
+            if not local:
+                continue
+            if os.path.isdir(local):
+                pdf_paths.extend(sorted(glob.glob(os.path.join(local, "*.pdf"))))
+            elif local.lower().endswith(".pdf"):
+                pdf_paths.append(local)
+            elif local.lower().endswith(IMAGE_EXTENSIONS):
+                image_paths.append(local)
+        if pdf_paths:
+            self.filesDropped.emit(pdf_paths)
+        if image_paths:
+            self.imagesDropped.emit(image_paths)
+        event.acceptProposedAction()
+
+
 class WorkerSignals(QtCore.QObject):
     """Сигнали для безпечного оновлення GUI з фонового потоку обробки.
     У Qt (на відміну від Tk) не можна напряму чіпати віджети з іншого
@@ -683,6 +779,7 @@ class WorkerSignals(QtCore.QObject):
     progress = QtCore.pyqtSignal(int)
     status = QtCore.pyqtSignal(str)
     finished = QtCore.pyqtSignal()
+    image_conversion_done = QtCore.pyqtSignal(str)
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -702,6 +799,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.signals.progress.connect(self._set_progress)
         self.signals.status.connect(self._set_status)
         self.signals.finished.connect(self._on_finished)
+        self.signals.image_conversion_done.connect(self._on_image_conversion_done)
 
         self._build_ui()
         self.resize(self.sizeHint())
@@ -734,12 +832,16 @@ class MainWindow(QtWidgets.QMainWindow):
         grp_files = QtWidgets.QGroupBox("Вхідні PDF-файли")
         grp_files.setFont(bold)
         left_col.addWidget(grp_files)
-        files_layout = QtWidgets.QHBoxLayout(grp_files)
+        files_outer = QtWidgets.QVBoxLayout(grp_files)
+        files_layout = QtWidgets.QHBoxLayout()
+        files_outer.addLayout(files_layout)
 
-        self.listbox = QtWidgets.QListWidget()
+        self.listbox = DropListWidget()
         self.listbox.setSelectionMode(
             QtWidgets.QAbstractItemView.ExtendedSelection)
         self.listbox.setMinimumHeight(140)
+        self.listbox.filesDropped.connect(self._add_files_list)
+        self.listbox.imagesDropped.connect(self.convert_images_to_pdf)
         files_layout.addWidget(self.listbox, 1)
 
         btns = QtWidgets.QVBoxLayout()
@@ -748,13 +850,20 @@ class MainWindow(QtWidgets.QMainWindow):
         btn_add_files.clicked.connect(self.add_files)
         btn_add_folder = QtWidgets.QPushButton("Додати папку...")
         btn_add_folder.clicked.connect(self.add_folder)
+        self.btn_images = QtWidgets.QPushButton("Зображення → PDF...")
+        self.btn_images.clicked.connect(lambda: self.convert_images_to_pdf(None))
         btn_remove = QtWidgets.QPushButton("Видалити вибране")
         btn_remove.clicked.connect(self.remove_selected)
         btn_clear = QtWidgets.QPushButton("Очистити список")
         btn_clear.clicked.connect(self.clear_files)
-        for b in (btn_add_files, btn_add_folder, btn_remove, btn_clear):
+        for b in (btn_add_files, btn_add_folder, self.btn_images, btn_remove, btn_clear):
             btns.addWidget(b)
         btns.addStretch(1)
+
+        drop_hint = QtWidgets.QLabel(
+            "Порада: PDF-файли, папку або зображення можна перетягнути в список вище.")
+        drop_hint.setStyleSheet("color: #888888;")
+        files_outer.addWidget(drop_hint)
 
         # ---- Куди зберегти - під списком файлів, та сама колонка ----
         grp_out = QtWidgets.QGroupBox("Куди зберегти результат")
@@ -815,13 +924,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.chk_searchable = QtWidgets.QCheckBox(
             "Розпізнаваний PDF (виділюваний текст)")
-        self.chk_searchable.setChecked(False)
+        self.chk_searchable.setChecked(True)
         self.chk_uk = QtWidgets.QCheckBox("Переклад українською")
-        self.chk_uk.setChecked(False)
+        self.chk_uk.setChecked(True)
         self.chk_ru = QtWidgets.QCheckBox("Переклад російською")
-        self.chk_ru.setChecked(False)
+        self.chk_ru.setChecked(True)
         self.chk_en = QtWidgets.QCheckBox("Переклад англійською")
-        self.chk_en.setChecked(False)
+        self.chk_en.setChecked(True)
         for c in (self.chk_searchable, self.chk_uk, self.chk_ru, self.chk_en):
             tasks_layout.addWidget(c)
 
@@ -856,25 +965,28 @@ class MainWindow(QtWidgets.QMainWindow):
         log_layout.addWidget(self.log_text)
 
     # ---------------- Дії ----------------
-    def add_files(self):
-        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
-            self, "Виберіть PDF-файли", self.last_dir, "PDF files (*.pdf)")
-        if paths:
-            self.last_dir = os.path.dirname(paths[0])
+    def _add_files_list(self, paths):
+        added = False
         for p in paths:
             if p not in self.files:
                 self.files.append(p)
                 self.listbox.addItem(p)
+                added = True
+        if paths:
+            self.last_dir = os.path.dirname(paths[0])
+        return added
+
+    def add_files(self):
+        paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
+            self, "Виберіть PDF-файли", self.last_dir, "PDF files (*.pdf)")
+        self._add_files_list(paths)
 
     def add_folder(self):
         folder = QtWidgets.QFileDialog.getExistingDirectory(
             self, "Виберіть папку з PDF-файлами", self.last_dir)
         if folder:
+            self._add_files_list(sorted(glob.glob(os.path.join(folder, "*.pdf"))))
             self.last_dir = folder
-            for p in sorted(glob.glob(os.path.join(folder, "*.pdf"))):
-                if p not in self.files:
-                    self.files.append(p)
-                    self.listbox.addItem(p)
 
     def remove_selected(self):
         for item in self.listbox.selectedItems():
@@ -885,6 +997,71 @@ class MainWindow(QtWidgets.QMainWindow):
     def clear_files(self):
         self.files.clear()
         self.listbox.clear()
+
+    def convert_images_to_pdf(self, image_paths):
+        if not image_paths:
+            image_paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
+                self, "Виберіть зображення", self.last_dir,
+                "Зображення (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp)",
+            )
+        if not image_paths:
+            return
+        self.last_dir = os.path.dirname(image_paths[0])
+
+        default_name = os.path.splitext(os.path.basename(image_paths[0]))[0] + ".pdf"
+        out_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Зберегти як PDF",
+            os.path.join(self.last_dir, default_name), "PDF files (*.pdf)",
+        )
+        if not out_path:
+            return
+        if not out_path.lower().endswith(".pdf"):
+            out_path += ".pdf"
+
+        # Сама конвертація (відкриття/перекодування кожного зображення) -
+        # у фоновому потоці: на великій кількості файлів (сотні фото)
+        # це може тривати десятки секунд, а виконання прямо в обробнику
+        # кліку блокує цикл подій Qt - вікно виглядає "завислим" і не
+        # відповідає на жодну дію, поки все не завершиться.
+        self.cancel_event.clear()
+        self.start_btn.setEnabled(False)
+        self.btn_images.setEnabled(False)
+        self.cancel_btn.setEnabled(True)
+        self.progress.setRange(0, len(image_paths))
+        self.progress.setValue(0)
+        self.status_label.setText(f"Конвертація зображень: 0/{len(image_paths)}")
+
+        self.worker_thread = threading.Thread(
+            target=self._run_image_conversion,
+            args=(image_paths, out_path),
+            daemon=True,
+        )
+        self.worker_thread.start()
+
+    def _run_image_conversion(self, image_paths, out_path):
+        def progress_cb(done, total):
+            self.signals.progress.emit(done)
+            self.signals.status.emit(f"Конвертація зображень: {done}/{total}")
+
+        try:
+            images_to_pdf(
+                image_paths, out_path, log_fn=self.log,
+                progress_fn=progress_cb, cancel_event=self.cancel_event,
+            )
+            self.signals.log.emit(
+                f"Створено PDF з {len(image_paths)} зображень: {out_path}")
+            self.signals.image_conversion_done.emit(out_path)
+        except ProcessingCancelled:
+            self.signals.log.emit(">>> Конвертацію скасовано користувачем.")
+        except Exception:
+            self.signals.log.emit(
+                f"[ПОМИЛКА] Не вдалося створити PDF із зображень:\n{traceback.format_exc()}")
+        finally:
+            self.signals.status.emit("Готово")
+            self.signals.finished.emit()
+
+    def _on_image_conversion_done(self, out_path):
+        self._add_files_list([out_path])
 
     def choose_font(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -912,6 +1089,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_finished(self):
         self.start_btn.setEnabled(True)
+        self.btn_images.setEnabled(True)
         self.cancel_btn.setEnabled(False)
 
     def log(self, msg):
@@ -935,9 +1113,8 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.critical(
                 self, "Tesseract не знайдено",
                 "Не вдалося знайти виконуваний файл Tesseract OCR.\n\n"
+                "Linux: sudo apt install tesseract-ocr tesseract-ocr-ukr tesseract-ocr-rus\n"
                 "Windows: https://github.com/UB-Mannheim/tesseract/wiki\n\n"
-                "Ubuntu: sudo apt install tesseract-ocr tesseract-ocr-ukr tesseract-ocr-rus\n"
-                "Fedora: sudo dnf install tesseract tesseract-langpack-eng tesseract-langpack-ukr tesseract-langpack-rus\n"
                 "OCR запуститься лише для сторінок без текстового шару — "
                 "якщо всі ваші PDF уже мають текст, можна продовжити і без нього.",
             )
@@ -958,6 +1135,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.cancel_event.clear()
         self.start_btn.setEnabled(False)
+        self.btn_images.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self.progress.setRange(0, len(self.files))
         self.progress.setValue(0)
