@@ -16,7 +16,7 @@ from PIL import Image, ImageOps
 import docx as _docx_module
 from deep_translator import GoogleTranslator
 
-from ocr import ocr_lines_from_image, dewarp_page_image
+from ocr import ocr_lines_from_image, dewarp_page_image, detect_and_fix_orientation
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BUNDLED_FONT = os.path.join(SCRIPT_DIR, "DejaVuSans.ttf")
@@ -152,7 +152,7 @@ IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp")
 
 
 def images_to_pdf(image_paths, output_path, log_fn=None, progress_fn=None,
-                   cancel_event=None, jpeg_quality=88, max_dimension=2200):
+                  cancel_event=None, jpeg_quality=88, max_dimension=2200):
     """Збирає список файлів-зображень в один PDF (по сторінці на кожне).
 
     Враховує EXIF-орієнтацію (`ImageOps.exif_transpose`) - без цього фото,
@@ -202,7 +202,8 @@ def images_to_pdf(image_paths, output_path, log_fn=None, progress_fn=None,
             if max(img.width, img.height) > max_dimension:
                 scale = max_dimension / max(img.width, img.height)
                 img = img.resize(
-                    (max(1, int(img.width * scale)), max(1, int(img.height * scale))),
+                    (max(1, int(img.width * scale)),
+                     max(1, int(img.height * scale))),
                     Image.LANCZOS,
                 )
 
@@ -213,7 +214,8 @@ def images_to_pdf(image_paths, output_path, log_fn=None, progress_fn=None,
             buf = io.BytesIO()
             img.save(buf, format="JPEG", quality=jpeg_quality, optimize=True)
             total_after += buf.tell()
-            page.insert_image(fitz.Rect(0, 0, w_pt, h_pt), stream=buf.getvalue())
+            page.insert_image(fitz.Rect(0, 0, w_pt, h_pt),
+                              stream=buf.getvalue())
 
             if log_fn:
                 log_fn(
@@ -354,17 +356,22 @@ def process_pdf(
     output_dir,
     dpi,
     make_searchable,
-    translate_targets,   # список кодів мов deep-translator, напр. ["uk", "ru", "en"]
+    # список кодів мов deep-translator, напр. ["uk", "ru", "en"]
+    translate_targets,
     font_path,
     log_fn,
     cancel_event,
-    page_start=None,     # 1-індексована перша сторінка діапазону (None = з початку)
-    page_end=None,       # 1-індексована остання сторінка діапазону (None = до кінця)
+    # 1-індексована перша сторінка діапазону (None = з початку)
+    page_start=None,
+    # 1-індексована остання сторінка діапазону (None = до кінця)
+    page_end=None,
     page_progress_fn=None,   # callback(page_index_1based, n_pages)
     glossary=None,       # set() рядків (у нижньому регістрі) - "не перекладати як є"
     low_confidence_threshold=55,
-    dewarp=False,         # спробувати виправити викривлення (згин) сторінки перед OCR
-    export_text_formats=None,   # set() з "docx"/"txt" - None/порожній = не зберігати окремо
+    # спробувати виправити викривлення (згин) сторінки перед OCR
+    dewarp=False,
+    # set() з "docx"/"txt" - None/порожній = не зберігати окремо
+    export_text_formats=None,
     export_text_split_pages=False,  # True = окремий текстовий файл на кожну сторінку
 ):
     """Обробляє один PDF-файл: OCR + (опційно) створення searchable PDF
@@ -416,9 +423,25 @@ def process_pdf(
         img_bytes = pix.tobytes("png")
         pil_img = Image.open(io.BytesIO(img_bytes))
 
-        page_w, page_h = page.rect.width, page.rect.height
-        scale_x = page_w / pix.width
-        scale_y = page_h / pix.height
+        # Фото могло бути зроблено "боком" чи догори ногами - виправляємо
+        # ЩЕ ДО розрахунку розмірів сторінки й до розпрямлення (яке на
+        # повернутому на 90° тексті теж нічого путнього не дасть).
+        if in_range:
+            pil_img, was_rotated = detect_and_fix_orientation(
+                pil_img, log_fn=log_fn)
+            if was_rotated:
+                buf = io.BytesIO()
+                pil_img.save(buf, format="PNG")
+                img_bytes = buf.getvalue()
+
+        # Розміри сторінки виходу рахуємо від РЕАЛЬНОГО (вже, можливо,
+        # повернутого) зображення, а не від збереженого в PDF page.rect -
+        # після повороту на 90°/270° ширина й висота міняються місцями,
+        # і прив'язка до старого page.rect дала б неправильні пропорції.
+        page_w = pil_img.width * 72 / dpi
+        page_h = pil_img.height * 72 / dpi
+        scale_x = page_w / pil_img.width
+        scale_y = page_h / pil_img.height
 
         if dewarp and in_range:
             try:
@@ -512,7 +535,8 @@ def process_pdf(
 
             if export_text_formats:
                 for lang in translate_targets:
-                    text = "\n".join(translations.get(lang, [])) if lines else ""
+                    text = "\n".join(translations.get(
+                        lang, [])) if lines else ""
                     translated_page_texts[lang].append(text)
 
             for lang in translate_targets:

@@ -53,6 +53,45 @@ if TESSERACT_CMD:
     pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
 
 
+def detect_and_fix_orientation(pil_img, log_fn=None):
+    """Визначає, чи сторінка повернута на 90/180/270° (типово при
+    фотографуванні - телефон міг триматись "боком" чи взагалі догори
+    ногами), і виправляє орієнтацію ще ДО основного розпізнавання.
+
+    Використовує вбудований у Tesseract механізм OSD (Orientation and
+    Script Detection) - окремий, швидкий прохід, що аналізує форму
+    літер для визначення напрямку тексту, а не намагається його
+    прочитати. Значно надійніший за спроби вгадати орієнтацію по формі
+    сторінки чи вмісту фото.
+
+    Повертає (виправлене_зображення, чи_був_поворот: bool)."""
+    try:
+        osd = pytesseract.image_to_osd(
+            pil_img, output_type=pytesseract.Output.DICT)
+    except Exception:
+        # Замало тексту на сторінці, чи інша причина, через яку OSD не
+        # спрацював - не критично, просто лишаємо орієнтацію як є.
+        return pil_img, False
+
+    angle = int(osd.get("rotate", 0) or 0)
+    conf = float(osd.get("orientation_conf", 0) or 0)
+    if angle == 0:
+        return pil_img, False
+    if conf < 1.0:
+        # Дуже непевне визначення (напр. дуже мало тексту на сторінці) -
+        # краще не ризикувати й лишити як є, ніж повернути правильну
+        # сторінку неправильно.
+        if log_fn:
+            log_fn(
+                f"  Орієнтація: можливий поворот на {angle}°, але "
+                f"впевненість замала ({conf:.1f}) - не чіпаю")
+        return pil_img, False
+
+    if log_fn:
+        log_fn(f"  Орієнтація: сторінку повернуто на {angle}°, виправляю...")
+    return pil_img.rotate(-angle, expand=True), True
+
+
 def preprocess_for_ocr(pil_img):
     """Готує зображення для Tesseract.
 
@@ -171,7 +210,8 @@ def _group_words_into_lines(words):
     if not words:
         return []
 
-    rows = []  # [{"words": [...], "y_sum": float, "count": int, "h_avg": float}]
+    # [{"words": [...], "y_sum": float, "count": int, "h_avg": float}]
+    rows = []
     for wd in sorted(words, key=lambda w: (w["y"], w["x"])):
         y_center = wd["y"] + wd["h"] / 2
         placed = False
@@ -182,7 +222,7 @@ def _group_words_into_lines(words):
                 row["y_sum"] += y_center
                 row["count"] += 1
                 row["h_avg"] = sum(w["h"]
-                                    for w in row["words"]) / row["count"]
+                                   for w in row["words"]) / row["count"]
                 placed = True
                 break
         if not placed:
@@ -248,7 +288,8 @@ def ocr_lines_from_image(pil_img, min_confidence=0):
     data_cyr = _run_tesseract_pass(proc_img, _CYRILLIC_LANGS, config)
     score_latin = _pass_score(data_latin)
     score_cyr = _pass_score(data_cyr)
-    data, score = (data_latin, score_latin) if score_latin >= score_cyr else (data_cyr, score_cyr)
+    data, score = (data_latin, score_latin) if score_latin >= score_cyr else (
+        data_cyr, score_cyr)
 
     words = _extract_words(data, min_confidence)
     groups = _group_words_into_lines(words)
@@ -270,7 +311,6 @@ def ocr_lines_from_image(pil_img, min_confidence=0):
             ),
         })
     return lines, max(score, 0.0)
-
 
 
 _CV2_MODULE = None
@@ -347,7 +387,8 @@ def _dewarp_global_curve(pil_img, cv2, np, log_fn=None):
         return None
 
     from collections import Counter
-    common_n, n_match = Counter(len(p) for p in strip_line_ys).most_common(1)[0]
+    common_n, n_match = Counter(len(p)
+                                for p in strip_line_ys).most_common(1)[0]
     if common_n < 3 or n_match < len(strip_centers) * 0.6:
         # Занадто мало смуг узгоджені по кількості рядків - типова
         # ознака, що кривизна різна для різних рядків (складне фото).
@@ -368,7 +409,8 @@ def _dewarp_global_curve(pil_img, cv2, np, log_fn=None):
         xs = np.array([p[0] for p in pts])
         ys = np.array([p[1] for p in pts])
         curvature = ys - ys.mean()
-        all_curv.append(np.interp(grid_x, xs, curvature, left=np.nan, right=np.nan))
+        all_curv.append(np.interp(grid_x, xs, curvature,
+                        left=np.nan, right=np.nan))
 
     if len(all_curv) < 3:
         return None
@@ -405,7 +447,8 @@ def _dewarp_global_curve(pil_img, cv2, np, log_fn=None):
         arr, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
 
     if log_fn:
-        log_fn(f"  Розпрямлення: єдина крива для сторінки, викривлення до {max_bend:.0f}px")
+        log_fn(
+            f"  Розпрямлення: єдина крива для сторінки, викривлення до {max_bend:.0f}px")
     return Image.fromarray(dewarped)
 
 
@@ -448,7 +491,8 @@ def _dewarp_perline(pil_img, cv2, np, log_fn=None):
         return pil_img
 
     max_bend = max(
-        float(np.max(np.abs(np.polyval(li["coeffs"], np.linspace(li["x0"], li["x1"], 20)) - li["target_y"])))
+        float(np.max(np.abs(np.polyval(li["coeffs"], np.linspace(
+            li["x0"], li["x1"], 20)) - li["target_y"])))
         for li in line_infos
     )
     if max_bend < 3.0:
@@ -460,9 +504,12 @@ def _dewarp_perline(pil_img, cv2, np, log_fn=None):
     output = arr.copy()
     n_corrected = 0
     for i, li in enumerate(line_infos):
-        gap_above = (li["target_y"] - line_infos[i - 1]["target_y"]) / 2 if i > 0 else 1e9
-        gap_below = (line_infos[i + 1]["target_y"] - li["target_y"]) / 2 if i < len(line_infos) - 1 else 1e9
-        band_half = min(li["med_h"] * 1.6 + 8, max(6.0, min(gap_above, gap_below) - 2))
+        gap_above = (li["target_y"] - line_infos[i - 1]
+                     ["target_y"]) / 2 if i > 0 else 1e9
+        gap_below = (line_infos[i + 1]["target_y"] - li["target_y"]
+                     ) / 2 if i < len(line_infos) - 1 else 1e9
+        band_half = min(li["med_h"] * 1.6 + 8,
+                        max(6.0, min(gap_above, gap_below) - 2))
 
         y0 = int(max(0, li["target_y"] - band_half))
         y1 = int(min(h, li["target_y"] + band_half))
@@ -472,7 +519,8 @@ def _dewarp_perline(pil_img, cv2, np, log_fn=None):
             continue
 
         col_x = np.arange(x0, x1)
-        shift = (np.polyval(li["coeffs"], col_x) - li["target_y"]).astype(np.float32)
+        shift = (np.polyval(li["coeffs"], col_x) -
+                 li["target_y"]).astype(np.float32)
         shift = np.clip(shift, -h * 0.05, h * 0.05)
 
         map_x_band, map_y_band = np.meshgrid(
@@ -526,4 +574,3 @@ def dewarp_page_image(pil_img, log_fn=None):
     if log_fn:
         log_fn("  Розпрямлення: єдина крива не підійшла (різна кривизна по рядках), пробую по-рядково...")
     return _dewarp_perline(pil_img, cv2, np, log_fn=log_fn)
-
