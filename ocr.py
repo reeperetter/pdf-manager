@@ -53,38 +53,84 @@ if TESSERACT_CMD:
     pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
 
 
+def _brute_force_orientation(pil_img, log_fn=None):
+    """Резервний метод, коли вбудований OSD Tesseract на оригінальному
+    зображенні не може впевнено визначити орієнтацію (типово - сторінка
+    з малою кількістю тексту, багато картинок, як приладова панель авто).
+
+    Ідея: замість одного невпевненого запитання "як повернута сторінка?"
+    ставимо OSD чотири РІЗНІ, простіші запитання - для кожної з 4
+    можливих орієнтацій кандидата запитуємо "чи ТИ вже прямий?" (тобто
+    чи OSD скаже rotate=0 саме для цього варіанта). Обираємо кандидата
+    з найвищою впевненістю серед тих, хто відповів "так".
+
+    Це надійніше за прямий OCR-перебір (пробували раніше): на сторінках
+    із симетричним компонуванням (напр. однаковий заголовок ліворуч і
+    праворуч, як на розвороті мануала) Tesseract іноді примудряється
+    "прочитати" текст навіть у справді неправильній орієнтації, тому сам
+    факт розпізнавання слів - ненадійний сигнал. А ось запитання "чи це
+    виглядає прямим" для кожного варіанта окремо - значно стійкіше."""
+    best_angle, best_conf = None, -1.0
+    for angle in (0, 90, 180, 270):
+        candidate = pil_img.rotate(-angle, expand=True) if angle else pil_img
+        try:
+            osd = pytesseract.image_to_osd(
+                candidate, output_type=pytesseract.Output.DICT)
+        except Exception:
+            continue
+        rotate_val = osd.get("rotate", None)
+        if rotate_val is None or int(rotate_val) != 0:
+            continue
+        conf = float(osd.get("orientation_conf", 0) or 0)
+        if conf > best_conf:
+            best_conf, best_angle = conf, angle
+    if best_angle is None:
+        return 0, -1.0
+    return best_angle, best_conf
+
+
 def detect_and_fix_orientation(pil_img, log_fn=None):
     """Визначає, чи сторінка повернута на 90/180/270° (типово при
     фотографуванні - телефон міг триматись "боком" чи взагалі догори
     ногами), і виправляє орієнтацію ще ДО основного розпізнавання.
 
-    Використовує вбудований у Tesseract механізм OSD (Orientation and
-    Script Detection) - окремий, швидкий прохід, що аналізує форму
-    літер для визначення напрямку тексту, а не намагається його
-    прочитати. Значно надійніший за спроби вгадати орієнтацію по формі
-    сторінки чи вмісту фото.
+    Спершу пробує вбудований у Tesseract механізм OSD (Orientation and
+    Script Detection) - швидкий прохід, що аналізує форму літер. Якщо
+    OSD не впевнений (типово на сторінках з малою кількістю тексту) -
+    переходить на перебір усіх 4 орієнтацій окремими OSD-запитами
+    (_brute_force_orientation).
 
     Повертає (виправлене_зображення, чи_був_поворот: bool)."""
+    angle, conf = 0, 0.0
     try:
         osd = pytesseract.image_to_osd(
             pil_img, output_type=pytesseract.Output.DICT)
+        angle = int(osd.get("rotate", 0) or 0)
+        conf = float(osd.get("orientation_conf", 0) or 0)
     except Exception:
-        # Замало тексту на сторінці, чи інша причина, через яку OSD не
-        # спрацював - не критично, просто лишаємо орієнтацію як є.
+        pass  # OSD не спрацював узагалі - переходимо одразу до резерву
+
+    if angle == 0 and conf >= 1.0:
         return pil_img, False
 
-    angle = int(osd.get("rotate", 0) or 0)
-    conf = float(osd.get("orientation_conf", 0) or 0)
-    if angle == 0:
-        return pil_img, False
     if conf < 1.0:
-        # Дуже непевне визначення (напр. дуже мало тексту на сторінці) -
-        # краще не ризикувати й лишити як є, ніж повернути правильну
-        # сторінку неправильно.
+        # OSD не певен (найчастіше - мало тексту на сторінці, багато
+        # зображень). Перебираємо всі 4 варіанти окремими OSD-запитами.
+        fallback_angle, fallback_conf = _brute_force_orientation(
+            pil_img, log_fn=log_fn)
+        if fallback_angle == 0 or fallback_conf < 1.0:
+            # Або впевнено "все ок як є", або взагалі ніде не вийшло
+            # впевнено визначитись - краще нічого не чіпати, ніж
+            # ризикнути повернути й так правильну сторінку.
+            return pil_img, False
+        angle = fallback_angle
         if log_fn:
             log_fn(
-                f"  Орієнтація: можливий поворот на {angle}°, але "
-                f"впевненість замала ({conf:.1f}) - не чіпаю")
+                f"  Орієнтація: основний OSD не певен, за результатом "
+                f"перебору обрано поворот на {angle}° (впевненість {fallback_conf:.1f})")
+        return pil_img.rotate(-angle, expand=True), True
+
+    if angle == 0:
         return pil_img, False
 
     if log_fn:
