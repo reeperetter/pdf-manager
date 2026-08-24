@@ -5,18 +5,19 @@
 
 Сам рушій розпізнавання (Tesseract) та розпрямлення сторінок - у ocr.py.
 """
+import gc
 import io
 import os
-import gc
-import time
 import random
+import time
 
-import fitz  # PyMuPDF
-from PIL import Image, ImageOps
 import docx as _docx_module
+import fitz  # PyMuPDF
 from deep_translator import GoogleTranslator
+from PIL import Image, ImageOps
 
-from ocr import ocr_lines_from_image, dewarp_page_image, detect_and_fix_orientation
+from ocr import (detect_and_fix_orientation, dewarp_page_image,
+                 ocr_lines_from_image)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 BUNDLED_FONT = os.path.join(SCRIPT_DIR, "DejaVuSans.ttf")
@@ -32,11 +33,21 @@ FALLBACK_FONTS = [
 ]
 
 
+class ProcessingCancelled(Exception):
+    pass
+
+
+def interruptible_sleep(duration, cancel_event=None, step=0.05):
+    """Виконує паузу з можливістю миттєвого переривання через cancel_event."""
+    end_time = time.time() + duration
+    while time.time() < end_time:
+        if cancel_event and cancel_event.is_set():
+            raise ProcessingCancelled()
+        time.sleep(min(step, max(0, end_time - time.time())))
+
+
 def find_unicode_font(user_path=None):
-    """Повертає шлях до TTF-шрифту, що підтримує кирилицю.
-    Спочатку перевіряє шрифт, вказаний користувачем, потім шрифт,
-    що постачається разом зі скриптом, і насамкінець — типові
-    системні шляхи."""
+    """Повертає шлях до TTF-шрифту, що підтримує кирилицю."""
     if user_path and os.path.isfile(user_path):
         return user_path
     if os.path.isfile(BUNDLED_FONT):
@@ -48,7 +59,7 @@ def find_unicode_font(user_path=None):
 
 
 def extract_lines_from_page(page):
-    """Витягує рядки тексту з наявного текстового шару PDF (координати сторінки)."""
+    """Витягує рядки тексту з наявного текстового шару PDF."""
     lines = []
     for block in page.get_text("dict").get("blocks", []):
         if block.get("type") != 0:
@@ -71,7 +82,7 @@ def extract_lines_from_page(page):
 
 
 def line_to_rect(line, scale_x, scale_y):
-    """Перетворює bbox рядка у fitz.Rect (сторінкові координати)."""
+    """Перетворює bbox рядка у fitz.Rect."""
     x0, y0, x1, y1 = line["bbox"]
     if line.get("page_coords"):
         return fitz.Rect(x0, y0, x1, y1)
@@ -87,7 +98,7 @@ def line_to_pixel_bbox(line, scale_x, scale_y):
 
 
 def fit_fontsize(text, rect_width, rect_height, fontfile, max_size=None):
-    """Підбирає розмір шрифту так, щоб текст влазив у прямокутник по ширині."""
+    """Підбирає розмір шрифту під прямокутник."""
     if max_size is None:
         max_size = max(4, rect_height * 0.85)
     size = max_size
@@ -104,24 +115,16 @@ def fit_fontsize(text, rect_width, rect_height, fontfile, max_size=None):
 
 
 def sample_bg_color(pil_img, bbox, pad=4):
-    """Визначає колір фону навколо текстового блоку (для замальовування
-    оригінального тексту перед вставкою перекладу).
-
-    Семплює вузькі смужки одразу НАД, ПІД, ЛІВОРУЧ і ПРАВОРУЧ від bbox
-    (а не крихітну ділянку в одній точці) і бере МЕДІАНУ по кожному
-    каналу кольору. Медіана, а не середнє, - щоб один випадково
-    захоплений темний піксель (краєчок сусіднього рядка, тінь) не тягнув
-    колір у неправильний бік: на однотонному фоні медіана й середнє
-    збігаються, а на "забрудненому" - медіана явно точніша."""
+    """Визначає колір фону навколо текстового блоку."""
     x0, y0, x1, y1 = bbox
     w, h = pil_img.size
     x0i, y0i, x1i, y1i = int(x0), int(y0), int(x1), int(y1)
 
     strips = [
-        (x0i, max(0, y0i - pad), x1i, y0i),           # над текстом
-        (x0i, y1i, x1i, min(h, y1i + pad)),            # під текстом
-        (max(0, x0i - pad), y0i, x0i, y1i),            # ліворуч
-        (x1i, y0i, min(w, x1i + pad), y1i),            # праворуч
+        (x0i, max(0, y0i - pad), x1i, y0i),
+        (x0i, y1i, x1i, min(h, y1i + pad)),
+        (max(0, x0i - pad), y0i, x0i, y1i),
+        (x1i, y0i, min(w, x1i + pad), y1i),
     ]
 
     samples_r, samples_g, samples_b = [], [], []
@@ -153,35 +156,7 @@ IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp")
 
 def images_to_pdf(image_paths, output_path, log_fn=None, progress_fn=None,
                   cancel_event=None, jpeg_quality=88, max_dimension=2200):
-    """Збирає список файлів-зображень в один PDF (по сторінці на кожне).
-
-    Враховує EXIF-орієнтацію (`ImageOps.exif_transpose`) - без цього фото,
-    зняті на телефон "боком", лягали б у PDF перевернутими, бо камери
-    зазвичай зберігають кадр як є, а орієнтацію - окремим тегом, який
-    показує лише переглядач фото, а не сирий піксельний вміст файлу.
-
-    Розмір сторінки рахується з припущення, що зображення - скан/фото з
-    ефективною роздільністю ~200 DPI (розумний баланс для фото з
-    телефону; для точних сканів з відомим DPI можна буде додати вибір
-    цього значення в GUI пізніше, якщо знадобиться).
-
-    Стиснення (щоб PDF не займав сотні МБ на великих фото з телефону):
-    - Кодування як JPEG (jpeg_quality=88), а не PNG. PNG - без втрат, але
-      для фотографічного вмісту (а не для чистого чорно-білого тексту)
-      майже не стискає шум/градієнти, тому важить у рази більше. JPEG на
-      якості 85-90 візуально невідрізнимий від оригіналу неозброєним оком,
-      але дає у 5-15 разів менший розмір файлу для типового фото сторінки.
-    - Обмеження найбільшої сторони до max_dimension пікселів (2200px за
-      замовчуванням - це вже із запасом понад типовий "друкарський" DPI
-      для сторінки A4/Letter; сучасні телефонні камери часто знімають в
-      4-5 разів вищій роздільності, ніж потрібно для чіткого читання
-      тексту, тож зайві пікселі - це лише зайва вага файлу без
-      практичної користі).
-
-    progress_fn(done, total), якщо передано, викликається після кожного
-    зображення - для оновлення прогрес-бару при виклику з фонового
-    потоку. cancel_event дозволяє перервати конвертацію (наприклад, при
-    випадковому перетягуванні сотень зображень)."""
+    """Збирає список зображень в один PDF."""
     assumed_dpi = 200
     doc = fitz.open()
     total_before = 0
@@ -237,10 +212,6 @@ def images_to_pdf(image_paths, output_path, log_fn=None, progress_fn=None,
     return output_path
 
 
-class ProcessingCancelled(Exception):
-    pass
-
-
 _ERROR_PAGE_MARKERS = (
     "that's an error",
     "that\u2019s an error",
@@ -255,26 +226,20 @@ _ERROR_PAGE_MARKERS = (
 
 
 def _looks_like_error_page(text):
-    """Google (неофіційний, безкоштовний translate.google.com) при
-    перевантаженні/бані по IP повертає не JSON з перекладом, а звичайну
-    HTML-сторінку помилки ("Error 500 ... That's an error ..."). deep-
-    translator іноді віддає це як звичайний рядок замість винятку - без
-    цієї перевірки таке сміття летіло прямо в PDF замість перекладу."""
     if not text:
         return False
     low = text.lower()
     return any(marker in low for marker in _ERROR_PAGE_MARKERS)
 
 
-def safe_translate(translator, text, log_fn=None, max_retries=4, base_delay=1.2):
-    """Перекладає один рядок з ретраями й експоненційною затримкою.
-    Якщо після всіх спроб переклад так і не вдався - повертає ОРИГІНАЛЬНИЙ
-    текст (краще лишити рядок оригіналом, ніж вставити в PDF сторінку
-    помилки Google)."""
+def safe_translate(translator, text, log_fn=None, cancel_event=None, max_retries=4, base_delay=1.2):
+    """Перекладає рядок з можливістю скасування та ретраями."""
     if not text or not text.strip():
         return text
     last_err = None
     for attempt in range(max_retries):
+        if cancel_event and cancel_event.is_set():
+            raise ProcessingCancelled()
         try:
             result = translator.translate(text)
         except Exception as e:
@@ -283,12 +248,11 @@ def safe_translate(translator, text, log_fn=None, max_retries=4, base_delay=1.2)
         if result and not _looks_like_error_page(result):
             return result
         if result and _looks_like_error_page(result):
-            last_err = RuntimeError(
-                "Google повернув сторінку помилки (перевантажений/тимчасовий бан) "
-                "замість перекладу")
-        # Експоненційна затримка перед повторною спробою + невеликий джиттер,
-        # щоб не бити рівно по секунді знову в той самий ліміт.
-        time.sleep(base_delay * (2 ** attempt) + random.uniform(0, 0.5))
+            last_err = RuntimeError("Google повернув сторінку помилки замість перекладу")
+
+        delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
+        interruptible_sleep(delay, cancel_event=cancel_event)
+
     if log_fn:
         log_fn(
             f"  [!] Не вдалося перекласти рядок після {max_retries} спроб "
@@ -298,9 +262,6 @@ def safe_translate(translator, text, log_fn=None, max_retries=4, base_delay=1.2)
 
 
 def _write_txt_file(path, page_texts):
-    """Записує список текстів сторінок в один .txt файл. Якщо сторінок
-    декілька в одному файлі - розділяє їх помітним заголовком, щоб було
-    зрозуміло, де закінчується одна сторінка й починається інша."""
     with open(path, "w", encoding="utf-8") as f:
         for i, text in enumerate(page_texts):
             if len(page_texts) > 1:
@@ -312,10 +273,6 @@ def _write_txt_file(path, page_texts):
 
 
 def _write_docx_file(path, page_texts):
-    """Записує список текстів сторінок в один .docx файл. Кожна сторінка
-    (крім першої) починається з нової сторінки Word (page break) - зручно
-    гортати, як оригінальний PDF, і зберігає прив'язку рядок-до-рядка
-    (кожен рядок з розпізнавання/перекладу - окремий абзац)."""
     doc = _docx_module.Document()
     for i, text in enumerate(page_texts):
         if i > 0:
@@ -330,10 +287,6 @@ def _write_docx_file(path, page_texts):
 
 
 def save_text_outputs(page_texts, output_dir, base_name, suffix, formats, split_pages):
-    """Зберігає розпізнаний/перекладений текст окремо від PDF - у форматі
-    DOCX і/або TXT (formats - set з "docx"/"txt"). split_pages=True -
-    окремий файл на кожну сторінку, False - один файл з усіма сторінками.
-    Повертає список збережених шляхів."""
     saved = []
     writers = {"txt": _write_txt_file, "docx": _write_docx_file}
     if split_pages:
@@ -356,35 +309,23 @@ def process_pdf(
     output_dir,
     dpi,
     make_searchable,
-    # список кодів мов deep-translator, напр. ["uk", "ru", "en"]
     translate_targets,
     font_path,
     log_fn,
     cancel_event,
-    # 1-індексована перша сторінка діапазону (None = з початку)
     page_start=None,
-    # 1-індексована остання сторінка діапазону (None = до кінця)
     page_end=None,
-    page_progress_fn=None,   # callback(page_index_1based, n_pages)
-    glossary=None,       # set() рядків (у нижньому регістрі) - "не перекладати як є"
+    page_progress_fn=None,
+    glossary=None,
     low_confidence_threshold=55,
-    # спробувати виправити викривлення (згин) сторінки перед OCR
     dewarp=False,
-    # set() з "docx"/"txt" - None/порожній = не зберігати окремо
     export_text_formats=None,
-    export_text_split_pages=False,  # True = окремий текстовий файл на кожну сторінку
+    export_text_split_pages=False,
 ):
-    """Обробляє один PDF-файл: OCR + (опційно) створення searchable PDF
-    та перекладених PDF. log_fn(str) - для виводу повідомлень у GUI.
-
-    Повертає (saved_files, low_confidence_pages) - другий елемент це
-    список номерів сторінок (1-індексованих), де впевненість OCR була
-    нижчою за low_confidence_threshold - варто перевірити вручну."""
-
     glossary = glossary or set()
     low_confidence_pages = []
     export_text_formats = export_text_formats or set()
-    original_page_texts = []  # список рядків тексту, по одному на сторінку
+    original_page_texts = []
     translated_page_texts = {lang: [] for lang in translate_targets}
 
     base_name = os.path.splitext(os.path.basename(input_path))[0]
@@ -393,10 +334,7 @@ def process_pdf(
 
     fontfile = find_unicode_font(font_path)
     if fontfile is None:
-        raise RuntimeError(
-            "Не знайдено TTF-шрифт з підтримкою кирилиці. "
-            "Вкажіть шлях до шрифту (напр. arial.ttf) у полі GUI."
-        )
+        raise RuntimeError("Не знайдено TTF-шрифт з підтримкою кирилиці.")
 
     out_searchable = fitz.open() if make_searchable else None
     out_translated = {lang: fitz.open() for lang in translate_targets}
@@ -404,13 +342,10 @@ def process_pdf(
     translators = {
         lang: GoogleTranslator(source="auto", target=lang) for lang in translate_targets
     }
-    # Кеш на весь файл: однакові рядки (заголовки, футери, номери сторінок,
-    # повторювані фрази) перекладаються лише один раз - це і швидше, і
-    # менше запитів до Google (менше шансів наштовхнутись на ліміт).
-    translation_cache = {}  # {(lang, text): translated_text}
+    translation_cache = {}
 
     for page_index in range(n_pages):
-        if cancel_event.is_set():
+        if cancel_event and cancel_event.is_set():
             raise ProcessingCancelled()
 
         page_num = page_index + 1
@@ -423,9 +358,6 @@ def process_pdf(
         img_bytes = pix.tobytes("png")
         pil_img = Image.open(io.BytesIO(img_bytes))
 
-        # Фото могло бути зроблено "боком" чи догори ногами - виправляємо
-        # ЩЕ ДО розрахунку розмірів сторінки й до розпрямлення (яке на
-        # повернутому на 90° тексті теж нічого путнього не дасть).
         if in_range:
             pil_img, was_rotated = detect_and_fix_orientation(
                 pil_img, log_fn=log_fn)
@@ -434,10 +366,6 @@ def process_pdf(
                 pil_img.save(buf, format="PNG")
                 img_bytes = buf.getvalue()
 
-        # Розміри сторінки виходу рахуємо від РЕАЛЬНОГО (вже, можливо,
-        # повернутого) зображення, а не від збереженого в PDF page.rect -
-        # після повороту на 90°/270° ширина й висота міняються місцями,
-        # і прив'язка до старого page.rect дала б неправильні пропорції.
         page_w = pil_img.width * 72 / dpi
         page_h = pil_img.height * 72 / dpi
         scale_x = page_w / pil_img.width
@@ -445,7 +373,8 @@ def process_pdf(
 
         if dewarp and in_range:
             try:
-                corrected = dewarp_page_image(pil_img, log_fn=log_fn)
+                corrected = dewarp_page_image(
+                    pil_img, log_fn=log_fn, cancel_event=cancel_event)
                 if corrected is not pil_img:
                     pil_img = corrected
                     buf = io.BytesIO()
@@ -453,12 +382,10 @@ def process_pdf(
                     img_bytes = buf.getvalue()
             except RuntimeError as e:
                 log_fn(f"  [!] Розпрямлення недоступне: {e}")
-                dewarp = False  # не намагатись знову на кожній наступній сторінці
+                dewarp = False
 
         lines = []
         if in_range and (make_searchable or translate_targets):
-            # Спершу пробуємо взяти вже наявний текстовий шар PDF (швидко,
-            # без OCR). Якщо його немає - розпізнаємо зображення сторінки.
             lines = extract_lines_from_page(page)
             if lines:
                 log_fn(
@@ -482,7 +409,7 @@ def process_pdf(
         if export_text_formats:
             original_page_texts.append("\n".join(ln["text"] for ln in lines))
 
-        # ---------- 1) Розпізнаваний PDF (той самий вигляд + невидимий текст) ----------
+        # 1) Searchable PDF
         if out_searchable is not None:
             sp = out_searchable.new_page(width=page_w, height=page_h)
             sp.insert_image(sp.rect, stream=img_bytes)
@@ -500,12 +427,12 @@ def process_pdf(
                         fontsize=fs,
                         fontfile=fontfile,
                         fontname="cyr1",
-                        render_mode=3,  # невидимий текст
+                        render_mode=3,
                     )
                 except Exception as e:
                     log_fn(f"  [!] Пропущено рядок (текстовий шар): {e}")
 
-        # ---------- 2) Перекладені PDF ----------
+        # 2) Translated PDF
         if translate_targets:
             translations = {}
             if lines:
@@ -515,22 +442,23 @@ def process_pdf(
                 for lang in translate_targets:
                     result = []
                     for t in texts_to_translate:
+                        if cancel_event and cancel_event.is_set():
+                            raise ProcessingCancelled()
+
                         if t.strip().lower() in glossary:
-                            # Термін з глосарію ("не перекладати") - завжди
-                            # лишається як є, без звернення до Google.
                             result.append(t)
                             continue
                         cache_key = (lang, t)
                         if cache_key in translation_cache:
                             result.append(translation_cache[cache_key])
                             continue
-                        tr = safe_translate(translators[lang], t, log_fn)
+
+                        tr = safe_translate(
+                            translators[lang], t, log_fn, cancel_event=cancel_event)
                         translation_cache[cache_key] = tr
                         result.append(tr)
-                        # Невелика пауза між запитами - неофіційний Google
-                        # Translate банить/повертає Error 500 саме при
-                        # частих запитах поспіль без жодних пауз.
-                        time.sleep(0.2)
+
+                        interruptible_sleep(0.2, cancel_event=cancel_event)
                     translations[lang] = result
 
             if export_text_formats:
@@ -546,23 +474,11 @@ def process_pdf(
                     continue
                 translated_lines = translations[lang]
 
-                # ВАЖЛИВО: спочатку малюємо ВСІ фони (замальовуємо оригінал),
-                # і лише ПОТІМ вставляємо ВЕСЬ текст, окремим проходом.
-                # Якщо робити фон+текст по черзі для кожного рядка (як було
-                # раніше), на щільно набраному тексті фон наступного рядка
-                # міг частково замальовувати вже вставлений текст
-                # попереднього. При двопрохідному підході текст завжди
-                # малюється останнім - поверх абсолютно всіх фонів,
-                # незалежно від того, чи прямокутники сусідніх рядків
-                # трохи перетинаються.
-                to_draw = []  # [(rect, tr_text), ...] - те, що реально малюємо
+                to_draw = []
                 for line, tr_text in zip(lines, translated_lines):
                     orig_text = line["text"].strip()
                     tr_text_stripped = (tr_text or "").strip()
                     if tr_text_stripped.lower() == orig_text.lower():
-                        # Переклад ідентичний оригіналу (номери, коди,
-                        # власні назви тощо) - нема сенсу замальовувати
-                        # й переписувати те саме, це тільки псує вигляд.
                         continue
                     rect = line_to_rect(line, scale_x, scale_y)
                     if rect.is_empty or rect.width <= 0 or rect.height <= 0:
@@ -592,10 +508,6 @@ def process_pdf(
                     except Exception as e:
                         log_fn(f"  [!] Пропущено рядок (переклад {lang}): {e}")
 
-        # Явно звільняємо памʼять цієї сторінки перед переходом до наступної.
-        # На довгих документах / слабких машинах це помітно знижує пік
-        # споживання RAM: без цього великі растрові зображення сторінок і
-        # внутрішній кеш MuPDF накопичуються протягом усього файлу.
         del pix, pil_img, img_bytes, lines
         page = None
         fitz.TOOLS.store_shrink(100)

@@ -465,10 +465,6 @@ class MainWindow(QtWidgets.QMainWindow):
         return added
 
     def _resync_files_from_listbox(self):
-        # Після перетягування елементів для зміни порядку всередині
-        # списку - Qt сам переставляє візуальні елементи, а наш паралельний
-        # self.files (в тому ж порядку, що й обробка файлів) треба
-        # синхронізувати вручну.
         self.files = [self.listbox.item(i).text()
                       for i in range(self.listbox.count())]
 
@@ -542,11 +538,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 return
             self.last_dir = out_target
 
-        # Сама конвертація (відкриття/перекодування кожного зображення) -
-        # у фоновому потоці: на великій кількості файлів (сотні фото)
-        # це може тривати десятки секунд, а виконання прямо в обробнику
-        # кліку блокує цикл подій Qt - вікно виглядає "завислим" і не
-        # відповідає на жодну дію, поки все не завершиться.
         self.cancel_event.clear()
         self.start_btn.setEnabled(False)
         self.btn_images.setEnabled(False)
@@ -566,6 +557,7 @@ class MainWindow(QtWidgets.QMainWindow):
         def progress_cb(done, total):
             self.signals.progress.emit(done)
             self.signals.status.emit(f"Конвертація зображень: {done}/{total}")
+            time.sleep(0.001)
 
         try:
             if mode == "combined":
@@ -747,8 +739,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # ---------------- Лог/прогрес (виконуються в головному потоці - слоти) ----------------
     def _append_log(self, msg):
-        # Рядки про збережений файл робимо клікабельним посиланням
-        # (відкриває файл в асоційованій програмі перегляду PDF).
         prefix = "  -> Збережено: "
         if msg.startswith(prefix):
             path = msg[len(prefix):].strip()
@@ -757,20 +747,24 @@ class MainWindow(QtWidgets.QMainWindow):
                 f'{prefix}<a href="{url}">{html.escape(path)}</a>')
         else:
             self.log_text.append(html.escape(msg))
+        QtCore.QCoreApplication.processEvents()
 
     def _on_log_link_clicked(self, url):
         QtGui.QDesktopServices.openUrl(url)
 
     def _set_progress(self, value):
         self.progress.setValue(value)
+        QtCore.QCoreApplication.processEvents()
 
     def _set_page_progress(self, done, total):
         self.page_progress.setRange(0, total)
         self.page_progress.setValue(done)
         self.page_progress_label.setText(f"Сторінка: {done}/{total}")
+        QtCore.QCoreApplication.processEvents()
 
     def _set_status(self, text):
         self.status_label.setText(text)
+        QtCore.QCoreApplication.processEvents()
 
     def _on_finished(self):
         self.start_btn.setEnabled(True)
@@ -778,11 +772,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cancel_btn.setEnabled(False)
         self.page_progress_label.setText("")
         self.page_progress.setValue(0)
+        QtCore.QCoreApplication.processEvents()
 
     def log(self, msg):
-        # Пишемо у файл одразу й синхронно (навіть якщо GUI зависне чи
-        # впаде - лог на диску вже буде), а в GUI - через сигнал, щоб
-        # безпечно оновити віджет з фонового потоку.
         with self._log_file_lock:
             try:
                 with open(self.log_file_path, "a", encoding="utf-8") as f:
@@ -893,7 +885,7 @@ class MainWindow(QtWidgets.QMainWindow):
                      export_text_formats, export_text_split):
         done = 0
         total = len(files)
-        all_low_confidence = []  # [(filename, [сторінки]), ...]
+        all_low_confidence = []
 
         for path in files:
             if self.cancel_event.is_set():
@@ -909,10 +901,12 @@ class MainWindow(QtWidgets.QMainWindow):
                     done += 1
                     self.signals.progress.emit(done)
                     self.signals.status.emit(f"Обробка: {done}/{total}")
+                    time.sleep(0.001)
                     continue
 
             def page_progress_cb(page_num, n_pages):
                 self.signals.page_progress.emit(page_num, n_pages)
+                time.sleep(0.001)
 
             try:
                 self.log(f"=== Обробка: {os.path.basename(path)} ===")
@@ -946,6 +940,7 @@ class MainWindow(QtWidgets.QMainWindow):
             done += 1
             self.signals.progress.emit(done)
             self.signals.status.emit(f"Обробка: {done}/{total}")
+            time.sleep(0.001)
 
         if all_low_confidence:
             self.log("=== Сторінки з невисокою впевненістю OCR (варто перевірити) ===")

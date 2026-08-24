@@ -7,6 +7,7 @@
 """
 import os
 import shutil
+import time
 
 import pytesseract
 from PIL import Image, ImageOps
@@ -62,16 +63,10 @@ def _brute_force_orientation(pil_img, log_fn=None):
     ставимо OSD чотири РІЗНІ, простіші запитання - для кожної з 4
     можливих орієнтацій кандидата запитуємо "чи ТИ вже прямий?" (тобто
     чи OSD скаже rotate=0 саме для цього варіанта). Обираємо кандидата
-    з найвищою впевненістю серед тих, хто відповів "так".
-
-    Це надійніше за прямий OCR-перебір (пробували раніше): на сторінках
-    із симетричним компонуванням (напр. однаковий заголовок ліворуч і
-    праворуч, як на розвороті мануала) Tesseract іноді примудряється
-    "прочитати" текст навіть у справді неправильній орієнтації, тому сам
-    факт розпізнавання слів - ненадійний сигнал. А ось запитання "чи це
-    виглядає прямим" для кожного варіанта окремо - значно стійкіше."""
+    з найвищою впевненістю серед тих, хто відповів "так"."""
     best_angle, best_conf = None, -1.0
     for angle in (0, 90, 180, 270):
+        time.sleep(0.001)  # Даємо GIL вивільнитись для UI
         candidate = pil_img.rotate(-angle, expand=True) if angle else pil_img
         try:
             osd = pytesseract.image_to_osd(
@@ -90,17 +85,7 @@ def _brute_force_orientation(pil_img, log_fn=None):
 
 
 def detect_and_fix_orientation(pil_img, log_fn=None):
-    """Визначає, чи сторінка повернута на 90/180/270° (типово при
-    фотографуванні - телефон міг триматись "боком" чи взагалі догори
-    ногами), і виправляє орієнтацію ще ДО основного розпізнавання.
-
-    Спершу пробує вбудований у Tesseract механізм OSD (Orientation and
-    Script Detection) - швидкий прохід, що аналізує форму літер. Якщо
-    OSD не впевнений (типово на сторінках з малою кількістю тексту) -
-    переходить на перебір усіх 4 орієнтацій окремими OSD-запитами
-    (_brute_force_orientation).
-
-    Повертає (виправлене_зображення, чи_був_поворот: bool)."""
+    """Визначає, чи сторінка повернута на 90/180/270° і виправляє її."""
     angle, conf = 0, 0.0
     try:
         osd = pytesseract.image_to_osd(
@@ -108,20 +93,15 @@ def detect_and_fix_orientation(pil_img, log_fn=None):
         angle = int(osd.get("rotate", 0) or 0)
         conf = float(osd.get("orientation_conf", 0) or 0)
     except Exception:
-        pass  # OSD не спрацював узагалі - переходимо одразу до резерву
+        pass
 
     if angle == 0 and conf >= 1.0:
         return pil_img, False
 
     if conf < 1.0:
-        # OSD не певен (найчастіше - мало тексту на сторінці, багато
-        # зображень). Перебираємо всі 4 варіанти окремими OSD-запитами.
         fallback_angle, fallback_conf = _brute_force_orientation(
             pil_img, log_fn=log_fn)
         if fallback_angle == 0 or fallback_conf < 1.0:
-            # Або впевнено "все ок як є", або взагалі ніде не вийшло
-            # впевнено визначитись - краще нічого не чіпати, ніж
-            # ризикнути повернути й так правильну сторінку.
             return pil_img, False
         angle = fallback_angle
         if log_fn:
@@ -139,19 +119,9 @@ def detect_and_fix_orientation(pil_img, log_fn=None):
 
 
 def preprocess_for_ocr(pil_img):
-    """Готує зображення для Tesseract.
-
-    На відміну від EasyOCR (нейромережа, стійка до "сирого" кольорового
-    зображення), класичний Tesseract значно точніший на чистому
-    чорно-білому вході з високим контрастом. Тому: переводимо в
-    відтінки сірого й піднімаємо контраст (autocontrast). Якщо сторінка
-    дрібна (низький DPI) - додатково збільшуємо, бо для Tesseract
-    рекомендований мінімум ~300 DPI, а дрібні літери він банально не
-    розпізнає."""
+    """Готує зображення для Tesseract (контраст + масштабування)."""
     gray = ImageOps.grayscale(pil_img)
     gray = ImageOps.autocontrast(gray, cutoff=1)
-    # Tesseract впевнено читає літери приблизно від ~20-30px заввишки.
-    # Якщо сторінка вузька (низький DPI/дрібний скан) - масштабуємо вгору.
     if gray.width < 1600:
         scale = 1600 / gray.width
         gray = gray.resize(
@@ -161,16 +131,6 @@ def preprocess_for_ocr(pil_img):
     return gray
 
 
-# Замість однієї об'єднаної мовної моделі "ukr+rus+eng" робимо ДВА окремі
-# проходи Tesseract - латиницею (eng) і кирилицею (ukr+rus) - і обираємо
-# кращий за впевненістю розпізнавання. Причина: кирилична "А", "Е", "Р",
-# "С", "Т", "Х" тощо піксель-у-піксель ідентичні латинським - при спільній
-# мовній моделі Tesseract час від часу віддає перевагу "не тому" алфавіту
-# для однаково виглядаючих літер (класична проблема мульти-скриптового
-# OCR), і в результат просочуються кириличні символи всередині
-# англійського тексту (і навпаки). Два окремі проходи усувають саму
-# можливість такої плутанини: "eng"-прохід фізично не вміє видати
-# кириличний символ.
 _LATIN_LANGS = "eng"
 _CYRILLIC_LANGS = "ukr+rus"
 
@@ -189,10 +149,7 @@ def _run_tesseract_pass(proc_img, lang, config):
 
 
 def _pass_score(data):
-    """Оцінка якості проходу: середня впевненість, зважена кількістю
-    розпізнаних символів. Прохід у "чужому" скрипті для реального тексту
-    сторінки зазвичай або знаходить набагато менше валідних слів, або
-    впевненість помітно нижча (мовна модель не впізнає такі "слова")."""
+    """Оцінка якості проходу."""
     weighted, total_chars = 0.0, 0
     n = len(data.get("text", []))
     for i in range(n):
@@ -213,13 +170,7 @@ def _pass_score(data):
 
 
 def _extract_words(data, min_confidence):
-    """Дістає з сирого виводу Tesseract список слів з координатами,
-    відкидаючи порожні/невпевнені записи. НЕ використовує block_num/
-    par_num/line_num з Tesseract - подальше групування в рядки робимо
-    самі (див. _group_words_into_lines), бо Tesseract у режимі
-    автосегментації (--psm 3) на сторінках зі складним макетом (фото +
-    дві колонки тексту) регулярно об'єднує в один "рядок" слова з різних
-    візуальних колонок, що опинились на одній висоті."""
+    """Дістає з сирого виводу Tesseract список слів з координатами."""
     words = []
     n = len(data.get("text", []))
     for i in range(n):
@@ -241,22 +192,10 @@ def _extract_words(data, min_confidence):
 
 
 def _group_words_into_lines(words):
-    """Групує окремі слова (з координатами) у візуальні рядки самостійно,
-    не покладаючись на угруповання Tesseract.
-
-    1. Слова об'єднуються в рядок, якщо їхні вертикальні центри близькі
-       (в межах ~60% середньої висоти рядка) - це звичайне групування по
-       висоті.
-    2. Всередині кожного такого "рядка" слова далі розбиваються на
-       під-рядки там, де горизонтальний розрив між сусідніми словами
-       НАБАГАТО більший за типовий міжслівний проміжок у цьому ж рядку -
-       це і є межа між колонками, що випадково опинились на одній висоті.
-       Поріг адаптивний (рахується окремо для кожного рядка), тому працює
-       і для дрібного, і для великого шрифту."""
+    """Групує окремі слова у візуальні рядки."""
     if not words:
         return []
 
-    # [{"words": [...], "y_sum": float, "count": int, "h_avg": float}]
     rows = []
     for wd in sorted(words, key=lambda w: (w["y"], w["x"])):
         y_center = wd["y"] + wd["h"] / 2
@@ -284,15 +223,6 @@ def _group_words_into_lines(words):
         ]
         median_gap = sorted(gaps)[len(gaps) // 2] if gaps else 0
         avg_h = sum(w["h"] for w in row_words) / len(row_words)
-        # Поріг розриву-між-колонками: явно більший і за типовий пробіл
-        # у цьому рядку, і за приблизну ширину "нормального" пробілу
-        # відносно висоти шрифту. Навмисно з великим запасом (5x висоти
-        # шрифту, мінімум 90px): на практиці розрив між реальними
-        # колонками - сотні пікселів (~600px на типовому розвороті A4 при
-        # 300 DPI), тоді як випадкова прогалина через дрібний огріх OCR
-        # (напр. кілька невпевнено розпізнаних символів після
-        # розпрямлення сторінки) - зазвичай 60-90px. Занизький поріг тут
-        # раніше хибно розбивав такі рядки навпіл.
         split_threshold = max(median_gap * 4, avg_h * 5, 90)
 
         current = [row_words[0]]
@@ -309,12 +239,7 @@ def _group_words_into_lines(words):
 
 
 def ocr_lines_from_image(pil_img, min_confidence=0):
-    """Запускає Tesseract на зображенні сторінки та повертає
-    (lines, confidence_score):
-    lines - список {"text": str, "bbox": (x0,y0,x1,y1)} у пікселях
-    оригінального pil_img; confidence_score - середньозважена впевненість
-    переможного проходу (0-100), для позначення сторінок з сумнівним
-    розпізнаванням."""
+    """Запускає Tesseract на зображенні сторінки та повертає рядки та впевненість."""
     if not TESSERACT_CMD:
         raise RuntimeError(
             "Не знайдено виконуваний файл Tesseract OCR. Встановіть його:\n"
@@ -325,13 +250,12 @@ def ocr_lines_from_image(pil_img, min_confidence=0):
     scale_back_x = pil_img.width / proc_img.width
     scale_back_y = pil_img.height / proc_img.height
 
-    # --oem 1: лише LSTM-рушій (сучасніший і точніший за legacy/комбо).
-    # --psm 3: автоматична сегментація сторінки для координат слів (сама
-    # логіка об'єднання слів у рядки - наша власна, нижче).
     config = "--oem 1 --psm 3"
 
     data_latin = _run_tesseract_pass(proc_img, _LATIN_LANGS, config)
+    time.sleep(0.001)  # Пауза для GIL
     data_cyr = _run_tesseract_pass(proc_img, _CYRILLIC_LANGS, config)
+
     score_latin = _pass_score(data_latin)
     score_cyr = _pass_score(data_cyr)
     data, score = (data_latin, score_latin) if score_latin >= score_cyr else (
@@ -364,11 +288,7 @@ _NP_MODULE = None
 
 
 def _lazy_import_cv2():
-    """Лінивий імпорт opencv-python-headless + numpy. Вони НЕ входять в
-    основні залежності і не імпортуються при старті програми - лише коли
-    користувач реально вмикає опцію розпрямлення сторінок. Так на слабких
-    ПК, де ця опція не використовується, вона не займає ані байта пам'яті
-    понад те, що вже потрібно решті програми."""
+    """Лінивий імпорт opencv-python-headless + numpy."""
     global _CV2_MODULE, _NP_MODULE
     if _CV2_MODULE is None:
         try:
@@ -384,15 +304,8 @@ def _lazy_import_cv2():
     return _CV2_MODULE, _NP_MODULE
 
 
-def _dewarp_global_curve(pil_img, cv2, np, log_fn=None):
-    """Стратегія 1: одна спільна "крива згину" на всю сторінку.
-
-    Працює на локальній проекції яскравості по вузьких смугах (без
-    Tesseract - швидше й не залежить від якості розпізнавання), тому
-    добре підходить, коли кривизна ОДНАКОВА для всіх рядків (типовий
-    рівномірний згин сторінки). Повертає None, якщо не вдалось впевнено
-    побудувати єдину модель (ознака, що кривизна для різних рядків
-    відрізняється - тоді краще підійде _dewarp_perline)."""
+def _dewarp_global_curve(pil_img, cv2, np, log_fn=None, cancel_event=None):
+    """Стратегія 1: одна спільна "крива згину" на всю сторінку."""
     arr = np.array(pil_img.convert("RGB"))
     gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
     h, w = gray.shape
@@ -405,6 +318,8 @@ def _dewarp_global_curve(pil_img, cv2, np, log_fn=None):
     smooth_k = max(5, h // 170)
     strip_centers, strip_line_ys = [], []
     for i in range(n_strips):
+        if cancel_event and cancel_event.is_set():
+            return None
         x0, x1 = i * strip_w, min(w, (i + 1) * strip_w)
         if x1 - x0 < 5:
             continue
@@ -436,8 +351,6 @@ def _dewarp_global_curve(pil_img, cv2, np, log_fn=None):
     common_n, n_match = Counter(len(p)
                                 for p in strip_line_ys).most_common(1)[0]
     if common_n < 3 or n_match < len(strip_centers) * 0.6:
-        # Занадто мало смуг узгоджені по кількості рядків - типова
-        # ознака, що кривизна різна для різних рядків (складне фото).
         return None
 
     line_curve_points = [[] for _ in range(common_n)]
@@ -469,10 +382,6 @@ def _dewarp_global_curve(pil_img, cv2, np, log_fn=None):
     if valid.sum() < 10:
         return None
 
-    # Перевіряємо, що рядки дійсно узгоджені: розкид (IQR) між рядками
-    # на кожній x-точці має бути малим порівняно з самою кривизною -
-    # інакше це не "одна крива", а суміш різних кривих, усереднення яких
-    # дасть викривлений (неправильний) результат.
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)
         spread = np.nanstd(np.array(all_curv), axis=0)
@@ -481,7 +390,7 @@ def _dewarp_global_curve(pil_img, cv2, np, log_fn=None):
     if max_bend < 3.0:
         return "no_bend"
     if typical_spread > max(6.0, max_bend * 0.5):
-        return None  # рядки надто розходяться - краще per-line
+        return None
 
     poly_coeffs = np.polyfit(grid_x[valid], avg_curv[valid], deg=4)
     full_curve = np.polyval(poly_coeffs, np.arange(w))
@@ -498,11 +407,8 @@ def _dewarp_global_curve(pil_img, cv2, np, log_fn=None):
     return Image.fromarray(dewarped)
 
 
-def _dewarp_perline(pil_img, cv2, np, log_fn=None):
-    """Стратегія 2 (fallback): кожен рядок випрямляється окремо за
-    власною формою, визначеною через позиції слів з Tesseract. Повільніша
-    й менш точна за _dewarp_global_curve на простих випадках, зате працює
-    і тоді, коли кривизна для різних рядків різна (фото під кутом)."""
+def _dewarp_perline(pil_img, cv2, np, log_fn=None, cancel_event=None):
+    """Стратегія 2 (fallback): кожен рядок випрямляється окремо."""
     arr = np.array(pil_img.convert("RGB"))
     h, w = arr.shape[:2]
 
@@ -516,6 +422,8 @@ def _dewarp_perline(pil_img, cv2, np, log_fn=None):
 
     line_infos = []
     for group in groups:
+        if cancel_event and cancel_event.is_set():
+            return pil_img
         if len(group) < 4:
             continue
         xs = np.array([wd["x"] for wd in group]) * scale_x
@@ -550,6 +458,8 @@ def _dewarp_perline(pil_img, cv2, np, log_fn=None):
     output = arr.copy()
     n_corrected = 0
     for i, li in enumerate(line_infos):
+        if cancel_event and cancel_event.is_set():
+            return pil_img
         gap_above = (li["target_y"] - line_infos[i - 1]
                      ["target_y"]) / 2 if i > 0 else 1e9
         gap_below = (line_infos[i + 1]["target_y"] - li["target_y"]
@@ -589,27 +499,12 @@ def _dewarp_perline(pil_img, cv2, np, log_fn=None):
     return Image.fromarray(output)
 
 
-def dewarp_page_image(pil_img, log_fn=None):
-    """Намагається виправити викривлення сторінки - типово для сканів чи
-    фото розгорнутої книги/документа. Повертає новий PIL.Image або
-    оригінал без змін, якщо виправити нема чого чи даних замало.
-
-    Пробує ДВІ стратегії по черзі:
-    1. _dewarp_global_curve - одна спільна крива для всієї сторінки.
-       Швидша й точніша, коли кривизна ОДНАКОВА для всіх рядків
-       (типовий рівномірний згин сторінки).
-    2. Якщо перша не змогла впевнено побудувати єдину модель (ознака, що
-       кривизна різна для різних рядків - типово для фото під кутом) -
-       fallback на _dewarp_perline: кожен рядок випрямляється окремо за
-       власною формою. Універсальніший, але трохи менш точний на
-       простих випадках і повільніший.
-
-    Чесно про межі методу: на дуже складних фото (згин + нахил +
-    відблиски одночасно) результат не ідеальний і не завжди дає чистий
-    виграш - це помітне, але не магічне виправлення."""
+def dewarp_page_image(pil_img, log_fn=None, cancel_event=None):
+    """Виправляє викривлення сторінки через _dewarp_global_curve чи _dewarp_perline."""
     cv2, np = _lazy_import_cv2()
 
-    result = _dewarp_global_curve(pil_img, cv2, np, log_fn=log_fn)
+    result = _dewarp_global_curve(
+        pil_img, cv2, np, log_fn=log_fn, cancel_event=cancel_event)
     if result == "no_bend":
         if log_fn:
             log_fn("  Розпрямлення: помітного викривлення не виявлено, без змін")
@@ -617,6 +512,10 @@ def dewarp_page_image(pil_img, log_fn=None):
     if result is not None:
         return result
 
+    if cancel_event and cancel_event.is_set():
+        return pil_img
+
     if log_fn:
         log_fn("  Розпрямлення: єдина крива не підійшла (різна кривизна по рядках), пробую по-рядково...")
-    return _dewarp_perline(pil_img, cv2, np, log_fn=log_fn)
+    return _dewarp_perline(
+        pil_img, cv2, np, log_fn=log_fn, cancel_event=cancel_event)
