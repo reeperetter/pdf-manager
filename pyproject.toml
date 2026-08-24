@@ -8,8 +8,8 @@ dependencies = [
     "deep-translator>=1.11.4",
     "pillow>=12.3.0",
     "pymupdf>=1.28.0",
+    "pyqt5>=5.15.11",
     "pytesseract>=0.3.13",
-    "PyQt5>=5.15.11",
     "python-docx>=1.1.0",
 ]
 
