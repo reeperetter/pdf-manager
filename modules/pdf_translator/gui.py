@@ -14,8 +14,8 @@ import traceback
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
-from ocr import TESSERACT_CMD, _lazy_import_cv2
-from pdf_pipeline import (
+from .ocr import TESSERACT_CMD, _lazy_import_cv2
+from .pdf_pipeline import (
     IMAGE_EXTENSIONS,
     ProcessingCancelled,
     process_pdf,

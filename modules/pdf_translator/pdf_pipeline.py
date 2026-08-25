@@ -16,7 +16,7 @@ import fitz  # PyMuPDF
 from deep_translator import GoogleTranslator
 from PIL import Image, ImageOps
 
-from ocr import (detect_and_fix_orientation, dewarp_page_image,
+from .ocr import (detect_and_fix_orientation, dewarp_page_image,
                  ocr_lines_from_image)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -232,32 +232,32 @@ def _looks_like_error_page(text):
     return any(marker in low for marker in _ERROR_PAGE_MARKERS)
 
 
-def safe_translate(translator, text, log_fn=None, cancel_event=None, max_retries=4, base_delay=1.2):
-    """Перекладає рядок з можливістю скасування та ретраями."""
+def safe_translate(translator, text, log_fn=None, cancel_event=None, max_retries=4, base_delay=0.8):
+    """Перекладає рядок з можливістю скасування та обмеженою кількістю спроб."""
     if not text or not text.strip():
         return text
+
     last_err = None
     for attempt in range(max_retries):
         if cancel_event and cancel_event.is_set():
             raise ProcessingCancelled()
+
         try:
             result = translator.translate(text)
+            if result and not _looks_like_error_page(result):
+                return result
+            if result and _looks_like_error_page(result):
+                last_err = "Google повернув HTML-сторінку помилки"
         except Exception as e:
-            last_err = e
-            result = None
-        if result and not _looks_like_error_page(result):
-            return result
-        if result and _looks_like_error_page(result):
-            last_err = RuntimeError("Google повернув сторінку помилки замість перекладу")
+            last_err = str(e)
 
-        delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
-        interruptible_sleep(delay, cancel_event=cancel_event)
+        if attempt < max_retries - 1:
+            delay = base_delay * (1.5 ** attempt) + random.uniform(0.1, 0.3)
+            interruptible_sleep(delay, cancel_event=cancel_event)
 
     if log_fn:
-        log_fn(
-            f"  [!] Не вдалося перекласти рядок після {max_retries} спроб "
-            f"({last_err}); залишаю оригінальний текст."
-        )
+        log_fn(f"  [!] Не вдалося перекласти рядок після {max_retries} спроб ({last_err}). Залишаю оригінал.")
+
     return text
 
 
@@ -358,6 +358,7 @@ def process_pdf(
         img_bytes = pix.tobytes("png")
         pil_img = Image.open(io.BytesIO(img_bytes))
 
+        was_rotated = False
         if in_range:
             pil_img, was_rotated = detect_and_fix_orientation(
                 pil_img, log_fn=log_fn)
@@ -386,21 +387,32 @@ def process_pdf(
 
         lines = []
         if in_range and (make_searchable or translate_targets):
-            lines = extract_lines_from_page(page)
-            if lines:
+            if was_rotated:
                 log_fn(
                     f"[{base_name}] Сторінка {page_num}/{n_pages}: "
-                    f"текст з PDF ({len(lines)} рядків), OCR пропущено")
-            else:
-                log_fn(
-                    f"[{base_name}] Сторінка {page_num}/{n_pages}: "
-                    f"немає текстового шару — розпізнавання (OCR)...")
+                    f"орієнтацію змінено — розпізнавання (OCR) за новими координатами...")
                 lines, ocr_score = ocr_lines_from_image(pil_img)
                 if lines and ocr_score < low_confidence_threshold:
                     low_confidence_pages.append(page_num)
                     log_fn(
                         f"  [!] Сторінка {page_num}: невисока впевненість "
                         f"OCR ({ocr_score:.0f}/100) - варто перевірити вручну")
+            else:
+                lines = extract_lines_from_page(page)
+                if lines:
+                    log_fn(
+                        f"[{base_name}] Сторінка {page_num}/{n_pages}: "
+                        f"текст з PDF ({len(lines)} рядків), OCR пропущено")
+                else:
+                    log_fn(
+                        f"[{base_name}] Сторінка {page_num}/{n_pages}: "
+                        f"немає текстового шару — розпізнавання (OCR)...")
+                    lines, ocr_score = ocr_lines_from_image(pil_img)
+                    if lines and ocr_score < low_confidence_threshold:
+                        low_confidence_pages.append(page_num)
+                        log_fn(
+                            f"  [!] Сторінка {page_num}: невисока впевненість "
+                            f"OCR ({ocr_score:.0f}/100) - варто перевірити вручну")
         elif not in_range:
             log_fn(
                 f"[{base_name}] Сторінка {page_num}/{n_pages}: поза вибраним "
@@ -448,6 +460,7 @@ def process_pdf(
                         if t.strip().lower() in glossary:
                             result.append(t)
                             continue
+
                         cache_key = (lang, t)
                         if cache_key in translation_cache:
                             result.append(translation_cache[cache_key])
@@ -455,10 +468,13 @@ def process_pdf(
 
                         tr = safe_translate(
                             translators[lang], t, log_fn, cancel_event=cancel_event)
+
                         translation_cache[cache_key] = tr
                         result.append(tr)
 
-                        interruptible_sleep(0.2, cancel_event=cancel_event)
+                        # Невелика базова пауза, щоб не спамити сервер
+                        interruptible_sleep(0.15, cancel_event=cancel_event)
+
                     translations[lang] = result
 
             if export_text_formats:
