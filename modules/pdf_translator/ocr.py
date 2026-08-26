@@ -192,49 +192,71 @@ def _extract_words(data, min_confidence):
 
 
 def _group_words_into_lines(words):
-    """Групує окремі слова у візуальні рядки."""
+    """Групує окремі слова у візуальні рядки з урахуванням розділення колонок."""
     if not words:
         return []
 
-    rows = []
-    for wd in sorted(words, key=lambda w: (w["y"], w["x"])):
-        y_center = wd["y"] + wd["h"] / 2
-        placed = False
-        for row in rows:
-            row_y_center = row["y_sum"] / row["count"]
-            if abs(y_center - row_y_center) < row["h_avg"] * 0.6:
-                row["words"].append(wd)
-                row["y_sum"] += y_center
-                row["count"] += 1
-                row["h_avg"] = sum(w["h"]
-                                   for w in row["words"]) / row["count"]
-                placed = True
-                break
-        if not placed:
-            rows.append(
-                {"words": [wd], "y_sum": y_center, "count": 1, "h_avg": wd["h"]})
+    # Розбиваємо слова на дві колонки, якщо є чітке розділення по ширині
+    min_x = min(w["x"] for w in words)
+    max_x = max(w["x"] + w["w"] for w in words)
+    page_width = max_x - min_x
+
+    # Пошук вертикального розриву між колонками
+    columns = [words]
+    if page_width > 500:
+        mid_start = min_x + page_width * 0.35
+        mid_end = min_x + page_width * 0.65
+
+        left_words = [w for w in words if (w["x"] + w["w"]) <= mid_end]
+        right_words = [w for w in words if w["x"] >= mid_start]
+
+        # Перевірка на реальну наявність двох колонок
+        if len(left_words) > 5 and len(right_words) > 5:
+            # Перевірка, що між ними дійсно є простір
+            max_left = max(w["x"] + w["w"] for w in left_words)
+            min_right = min(w["x"] for w in right_words)
+            if min_right - max_left > 15:
+                columns = [left_words, right_words]
 
     groups = []
-    for row in rows:
-        row_words = sorted(row["words"], key=lambda w: w["x"])
-        gaps = [
-            row_words[i]["x"] - (row_words[i - 1]["x"] + row_words[i - 1]["w"])
-            for i in range(1, len(row_words))
-        ]
-        median_gap = sorted(gaps)[len(gaps) // 2] if gaps else 0
-        avg_h = sum(w["h"] for w in row_words) / len(row_words)
-        split_threshold = max(median_gap * 4, avg_h * 5, 90)
+    for col_words in columns:
+        rows = []
+        for wd in sorted(col_words, key=lambda w: (w["y"], w["x"])):
+            y_center = wd["y"] + wd["h"] / 2
+            placed = False
+            for row in rows:
+                row_y_center = row["y_sum"] / row["count"]
+                if abs(y_center - row_y_center) < row["h_avg"] * 0.6:
+                    row["words"].append(wd)
+                    row["y_sum"] += y_center
+                    row["count"] += 1
+                    row["h_avg"] = sum(w["h"] for w in row["words"]) / row["count"]
+                    placed = True
+                    break
+            if not placed:
+                rows.append({"words": [wd], "y_sum": y_center, "count": 1, "h_avg": wd["h"]})
 
-        current = [row_words[0]]
-        for i in range(1, len(row_words)):
-            prev = row_words[i - 1]
-            gap = row_words[i]["x"] - (prev["x"] + prev["w"])
-            if gap > split_threshold:
-                groups.append(current)
-                current = [row_words[i]]
-            else:
-                current.append(row_words[i])
-        groups.append(current)
+        for row in rows:
+            row_words = sorted(row["words"], key=lambda w: w["x"])
+            gaps = [
+                row_words[i]["x"] - (row_words[i - 1]["x"] + row_words[i - 1]["w"])
+                for i in range(1, len(row_words))
+            ]
+            median_gap = sorted(gaps)[len(gaps) // 2] if gaps else 0
+            avg_h = sum(w["h"] for w in row_words) / len(row_words)
+            split_threshold = max(median_gap * 3, avg_h * 3, 50)
+
+            current = [row_words[0]]
+            for i in range(1, len(row_words)):
+                prev = row_words[i - 1]
+                gap = row_words[i]["x"] - (prev["x"] + prev["w"])
+                if gap > split_threshold:
+                    groups.append(current)
+                    current = [row_words[i]]
+                else:
+                    current.append(row_words[i])
+            groups.append(current)
+
     return groups
 
 
@@ -250,7 +272,7 @@ def ocr_lines_from_image(pil_img, min_confidence=0):
     scale_back_x = pil_img.width / proc_img.width
     scale_back_y = pil_img.height / proc_img.height
 
-    config = "--oem 1 --psm 3"
+    config = "--oem 1 --psm 6"
 
     data_latin = _run_tesseract_pass(proc_img, _LATIN_LANGS, config)
     time.sleep(0.001)  # Пауза для GIL
@@ -348,8 +370,7 @@ def _dewarp_global_curve(pil_img, cv2, np, log_fn=None, cancel_event=None):
         return None
 
     from collections import Counter
-    common_n, n_match = Counter(len(p)
-                                for p in strip_line_ys).most_common(1)[0]
+    common_n, n_match = Counter(len(p) for p in strip_line_ys).most_common(1)[0]
     if common_n < 3 or n_match < len(strip_centers) * 0.6:
         return None
 
@@ -413,7 +434,7 @@ def _dewarp_perline(pil_img, cv2, np, log_fn=None, cancel_event=None):
     h, w = arr.shape[:2]
 
     proc_img = preprocess_for_ocr(pil_img)
-    data = _run_tesseract_pass(proc_img, _LATIN_LANGS, "--oem 1 --psm 3")
+    data = _run_tesseract_pass(proc_img, _LATIN_LANGS, "--oem 1 --psm 6")
     words = _extract_words(data, 0)
     groups = _group_words_into_lines(words)
 
