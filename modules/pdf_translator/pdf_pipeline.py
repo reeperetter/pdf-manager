@@ -4,16 +4,16 @@
 окремого текстового файлу (DOCX/TXT).
 
 Сам рушій розпізнавання (Tesseract) та розпрямлення сторінок - у ocr.py.
+Переклад виконується онлайн через незалежні сервіси (MyMemory / DeepL).
 """
 import gc
 import io
 import os
-import random
 import time
 
 import docx as _docx_module
 import fitz  # PyMuPDF
-from deep_translator import GoogleTranslator
+from deep_translator import DeeplTranslator, MyMemoryTranslator
 from PIL import Image, ImageOps
 
 from .ocr import (detect_and_fix_orientation, dewarp_page_image,
@@ -93,7 +93,7 @@ def line_to_pixel_bbox(line, scale_x, scale_y):
     """Перетворює bbox рядка у координати пікселів зображення."""
     x0, y0, x1, y1 = line["bbox"]
     if line.get("page_coords"):
-        return (x0 / scale_x, y0 / scale_y, x1 / scale_x, y1 / scale_y)
+        return (x0 / scale_x, y0 / scale_y, x1 / scale_y, y1 / scale_y)
     return line["bbox"]
 
 
@@ -212,53 +212,101 @@ def images_to_pdf(image_paths, output_path, log_fn=None, progress_fn=None,
     return output_path
 
 
-_ERROR_PAGE_MARKERS = (
-    "that's an error",
-    "that\u2019s an error",
-    "that's all we know",
-    "that\u2019s all we know",
-    "please try again later",
-    "<html",
-    "error 500",
-    "error 429",
-    "500.that",
-)
+def detect_text_language(text):
+    """Спроба визначити мову тексту локально без зовнішніх API."""
+    if not text or len(text.strip()) < 3:
+        return "en"
+
+    try:
+        from langdetect import detect
+        lang = detect(text)
+        return lang if lang else "en"
+    except Exception:
+        pass
+
+    # Резервний аналіз за алфавітом
+    has_cyrillic = any('\u0400' <= char <= '\u04FF' for char in text)
+    if has_cyrillic:
+        return "uk"
+    return "en"
 
 
-def _looks_like_error_page(text):
-    if not text:
-        return False
-    low = text.lower()
-    return any(marker in low for marker in _ERROR_PAGE_MARKERS)
+def translate_batch_microsoft(lines_list, target_lang="uk", source_lang="auto", log_fn=None, cancel_event=None, deepl_api_key=None):
+    """
+    Онлайн-переклад через MyMemory або DeepL.
+    Автоматично замінює 'auto' на визначений ISO-код перед відправкою у MyMemory.
+    """
+    if not lines_list:
+        return []
 
+    if cancel_event and cancel_event.is_set():
+        raise ProcessingCancelled()
 
-def safe_translate(translator, text, log_fn=None, cancel_event=None, max_retries=4, base_delay=0.8):
-    """Перекладає рядок з можливістю скасування та обмеженою кількістю спроб."""
-    if not text or not text.strip():
-        return text
-
-    last_err = None
-    for attempt in range(max_retries):
-        if cancel_event and cancel_event.is_set():
-            raise ProcessingCancelled()
-
+    # 1. Якщо передано DeepL — він підтримує 'auto'
+    if deepl_api_key:
         try:
-            result = translator.translate(text)
-            if result and not _looks_like_error_page(result):
-                return result
-            if result and _looks_like_error_page(result):
-                last_err = "Google повернув HTML-сторінку помилки"
+            translator = DeeplTranslator(api_key=deepl_api_key, source=source_lang, target=target_lang, use_free_api=True)
+            return [translator.translate(line) if line.strip() else "" for line in lines_list]
         except Exception as e:
-            last_err = str(e)
+            if log_fn:
+                log_fn(f"  [!] DeepL помилка: {e}. Перехід на MyMemory...")
 
-        if attempt < max_retries - 1:
-            delay = base_delay * (1.5 ** attempt) + random.uniform(0.1, 0.3)
-            interruptible_sleep(delay, cancel_event=cancel_event)
+    # 2. Якщо source_lang == 'auto', визначаємо мову локально
+    actual_source = source_lang
+    if actual_source == "auto":
+        sample_text = " ".join([l.strip() for l in lines_list if l.strip()][:5])
+        actual_source = detect_text_language(sample_text)
+        if log_fn:
+            log_fn(f"  [i] Автовизначення мови джерела: '{actual_source}'")
 
-    if log_fn:
-        log_fn(f"  [!] Не вдалося перекласти рядок після {max_retries} спроб ({last_err}). Залишаю оригінал.")
+    # Мапінг кодів ISO під вимоги MyMemory (потрібні повні локалі)
+    lang_map = {
+        "uk": "uk-UA",
+        "en": "en-US",
+        "de": "de-DE",
+        "fr": "fr-FR",
+        "es": "es-ES",
+        "it": "it-IT",
+        "pl": "pl-PL",
+        "ru": "ru-RU"
+    }
 
-    return text
+    tgt = lang_map.get(target_lang, target_lang)
+    src = lang_map.get(actual_source, actual_source)
+
+    try:
+        translator = MyMemoryTranslator(source=src, target=tgt)
+        translated_lines = []
+
+        for line in lines_list:
+            if cancel_event and cancel_event.is_set():
+                raise ProcessingCancelled()
+
+            text = line.strip()
+            if not text:
+                translated_lines.append("")
+                continue
+
+            interruptible_sleep(0.1, cancel_event=cancel_event)
+
+            try:
+                res = translator.translate(text)
+                if res and "INVALID SOURCE LANGUAGE" in str(res).upper():
+                    translated_lines.append(text)
+                else:
+                    translated_lines.append(res if res else text)
+            except Exception as item_err:
+                if log_fn:
+                    log_fn(f"  [!] Помилка рядка: {item_err}")
+                translated_lines.append(text)
+
+        return translated_lines
+
+    except Exception as e:
+        if log_fn:
+            log_fn(f"  [!] MyMemory Помилка: {e}")
+
+    return lines_list
 
 
 def _write_txt_file(path, page_texts):
@@ -321,6 +369,8 @@ def process_pdf(
     dewarp=False,
     export_text_formats=None,
     export_text_split_pages=False,
+    source_lang="auto",
+    deepl_api_key=None,
 ):
     glossary = glossary or set()
     low_confidence_pages = []
@@ -338,11 +388,6 @@ def process_pdf(
 
     out_searchable = fitz.open() if make_searchable else None
     out_translated = {lang: fitz.open() for lang in translate_targets}
-
-    translators = {
-        lang: GoogleTranslator(source="auto", target=lang) for lang in translate_targets
-    }
-    translation_cache = {}
 
     for page_index in range(n_pages):
         if cancel_event and cancel_event.is_set():
@@ -448,34 +493,15 @@ def process_pdf(
         if translate_targets:
             translations = {}
             if lines:
-                log_fn(
-                    f"[{base_name}] Сторінка {page_num}/{n_pages}: переклад...")
-                texts_to_translate = [ln["text"] for ln in lines]
+                log_fn(f"[{base_name}] Сторінка {page_num}/{n_pages}: переклад ({len(lines)} рядків)...")
+                raw_texts = [ln["text"] for ln in lines]
+
                 for lang in translate_targets:
-                    result = []
-                    for t in texts_to_translate:
-                        if cancel_event and cancel_event.is_set():
-                            raise ProcessingCancelled()
-
-                        if t.strip().lower() in glossary:
-                            result.append(t)
-                            continue
-
-                        cache_key = (lang, t)
-                        if cache_key in translation_cache:
-                            result.append(translation_cache[cache_key])
-                            continue
-
-                        tr = safe_translate(
-                            translators[lang], t, log_fn, cancel_event=cancel_event)
-
-                        translation_cache[cache_key] = tr
-                        result.append(tr)
-
-                        # Невелика базова пауза, щоб не спамити сервер
-                        interruptible_sleep(0.15, cancel_event=cancel_event)
-
-                    translations[lang] = result
+                    translated_lines = translate_batch_microsoft(
+                        raw_texts, target_lang=lang, source_lang=source_lang,
+                        log_fn=log_fn, cancel_event=cancel_event, deepl_api_key=deepl_api_key
+                    )
+                    translations[lang] = translated_lines
 
             if export_text_formats:
                 for lang in translate_targets:
