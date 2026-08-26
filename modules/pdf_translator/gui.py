@@ -1,9 +1,6 @@
 """
 GUI на PyQt5: головне вікно, список файлів з drag-and-drop, увесь
 робочий процес (фонові потоки, сигнали, журнал, налаштування).
-
-Уся логіка розпізнавання/PDF/перекладу - в ocr.py та pdf_pipeline.py;
-цей модуль лише викликає її та показує результат користувачу.
 """
 import os
 import glob
@@ -14,6 +11,7 @@ import traceback
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
+from ui_icons import create_vector_icon
 from .ocr import TESSERACT_CMD, _lazy_import_cv2
 from .pdf_pipeline import (
     IMAGE_EXTENSIONS,
@@ -23,34 +21,7 @@ from .pdf_pipeline import (
 )
 
 
-_DARK_STYLESHEET = """
-QWidget { background-color: #2b2b2b; color: #dddddd; }
-QGroupBox { border: 1px solid #444444; margin-top: 8px; padding-top: 6px; }
-QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }
-QLineEdit, QPlainTextEdit, QTextBrowser, QListWidget, QSpinBox {
-    background-color: #383838; color: #dddddd; border: 1px solid #555555;
-}
-QPushButton { background-color: #454545; border: 1px solid #5a5a5a; padding: 4px 8px; }
-QPushButton:hover { background-color: #525252; }
-QPushButton:disabled { color: #888888; }
-QProgressBar { background-color: #383838; border: 1px solid #555555; }
-QProgressBar::chunk { background-color: #3a7bd5; }
-QMenuBar, QMenu { background-color: #2b2b2b; color: #dddddd; }
-QMenu::item:selected { background-color: #3a7bd5; }
-"""
-
-
 class DropListWidget(QtWidgets.QListWidget):
-    """QListWidget з підтримкою перетягування файлів/папок мишею з
-    файлового менеджера прямо у список. Підтримує PDF-файли, папки
-    (тоді беруться всі *.pdf всередині) та зображення (jpg/png/...) -
-    для них окремий сигнал, бо їх спершу треба зібрати в PDF.
-
-    Додатково підтримує перетягування ЕЛЕМЕНТІВ ВСЕРЕДИНІ списку для
-    зміни порядку обробки файлів (InternalMove) - зовнішні drop'и
-    (з файлового менеджера) і внутрішнє перетягування розрізняються за
-    наявністю URL у mimeData, тому обидва працюють одночасно без
-    конфлікту."""
     filesDropped = QtCore.pyqtSignal(list)
     imagesDropped = QtCore.pyqtSignal(list)
     reordered = QtCore.pyqtSignal()
@@ -75,8 +46,6 @@ class DropListWidget(QtWidgets.QListWidget):
 
     def dropEvent(self, event):
         if not event.mimeData().hasUrls():
-            # Немає URL - це внутрішнє перетягування (зміна порядку
-            # файлів у списку), а не файли ззовні.
             super().dropEvent(event)
             self.reordered.emit()
             return
@@ -100,10 +69,6 @@ class DropListWidget(QtWidgets.QListWidget):
 
 
 class WorkerSignals(QtCore.QObject):
-    """Сигнали для безпечного оновлення GUI з фонового потоку обробки.
-    У Qt (на відміну від Tk) не можна напряму чіпати віджети з іншого
-    потоку - сигнали/слоти автоматично переносять виклик у головний
-    потік, тому саме через них тут і йде весь зв'язок з робочим потоком."""
     log = QtCore.pyqtSignal(str)
     progress = QtCore.pyqtSignal(int)
     status = QtCore.pyqtSignal(str)
@@ -112,78 +77,14 @@ class WorkerSignals(QtCore.QObject):
     page_progress = QtCore.pyqtSignal(int, int)
 
 
-def _build_app_icon():
-    """Малює тематичну іконку програми "з нуля" через QPainter - лист
-    документа з текстовими рядками та стрілкою перекладу поверх. Без
-    залежності від зовнішніх файлів зображень (які легко загубити при
-    розповсюдженні програми) - іконка завжди на місці, це просто код."""
-    size = 256
-    pix = QtGui.QPixmap(size, size)
-    pix.fill(QtCore.Qt.transparent)
-    p = QtGui.QPainter(pix)
-    p.setRenderHint(QtGui.QPainter.Antialiasing)
-
-    # Лист документа з загнутим кутиком
-    doc_color = QtGui.QColor("#f5f5f5")
-    border_color = QtGui.QColor("#3a5a8c")
-    margin = 28
-    fold = 46
-    path = QtGui.QPainterPath()
-    path.moveTo(margin, margin)
-    path.lineTo(size - margin - fold, margin)
-    path.lineTo(size - margin, margin + fold)
-    path.lineTo(size - margin, size - margin)
-    path.lineTo(margin, size - margin)
-    path.closeSubpath()
-    p.setPen(QtGui.QPen(border_color, 6))
-    p.setBrush(doc_color)
-    p.drawPath(path)
-
-    fold_path = QtGui.QPainterPath()
-    fold_path.moveTo(size - margin - fold, margin)
-    fold_path.lineTo(size - margin - fold, margin + fold)
-    fold_path.lineTo(size - margin, margin + fold)
-    fold_path.closeSubpath()
-    p.setBrush(QtGui.QColor("#c7d4e8"))
-    p.setPen(QtGui.QPen(border_color, 4))
-    p.drawPath(fold_path)
-
-    # Рядки тексту на документі
-    pen = QtGui.QPen(QtGui.QColor("#8a97a8"), 8)
-    pen.setCapStyle(QtCore.Qt.RoundCap)
-    p.setPen(pen)
-    line_xs = (margin + 20, size - margin - fold - 10)
-    for ly in (98, 122, 146):
-        p.drawLine(line_xs[0], ly, line_xs[1] if ly != 146 else line_xs[1] - 40, ly)
-
-    # Кружечок з двонаправленою стрілкою перекладу (акцентний колір)
-    accent = QtGui.QColor("#2f8f5b")
-    cx, cy, r = size // 2, 190, 46
-    p.setBrush(accent)
-    p.setPen(QtGui.QPen(QtGui.QColor("#ffffff"), 5))
-    p.drawEllipse(QtCore.QPoint(cx, cy), r, r)
-
-    font = QtGui.QFont("DejaVu Sans", 26, QtGui.QFont.Bold)
-    p.setFont(font)
-    p.setPen(QtGui.QPen(QtGui.QColor("#ffffff")))
-    p.drawText(QtCore.QRect(cx - r, cy - r, 2 * r, 2 * r),
-               QtCore.Qt.AlignCenter, "A\u21c4\u042f")
-
-    p.end()
-    return QtGui.QIcon(pix)
-
-
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("PDF-manager: OCR + переклад")
-        self.setWindowIcon(_build_app_icon())
 
         self.files = []
         self.cancel_event = threading.Event()
         self.worker_thread = None
-        # Діалоги вибору файлів за замовчуванням відкриваються в домашній
-        # директорії, а далі запам'ятовують останню відкриту користувачем.
         self.last_dir = os.path.expanduser("~")
 
         self.settings = QtCore.QSettings("pdf-ocr-translator", "PDFManager")
@@ -202,7 +103,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._build_ui()
         self._build_menu()
         self._load_settings()
-        self.resize(self.sizeHint())
 
     # ---------------- UI ----------------
     def _build_ui(self):
@@ -215,7 +115,6 @@ class MainWindow(QtWidgets.QMainWindow):
         bold = QtGui.QFont()
         bold.setBold(True)
 
-        # ---- Двоколонковий контейнер: зліва файли+вивід, справа налаштування ----
         columns = QtWidgets.QHBoxLayout()
         columns.setSpacing(8)
         root_layout.addLayout(columns)
@@ -238,12 +137,8 @@ class MainWindow(QtWidgets.QMainWindow):
         files_outer.addLayout(files_layout)
 
         self.listbox = DropListWidget()
-        self.listbox.setSelectionMode(
-            QtWidgets.QAbstractItemView.ExtendedSelection)
+        self.listbox.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.listbox.setMinimumHeight(110)
-        self.listbox.setToolTip(
-            "Можна перетягнути сюди PDF-файли, папку або зображення "
-            "(зображення буде запропоновано зібрати в PDF)")
         self.listbox.filesDropped.connect(self._add_files_list)
         self.listbox.imagesDropped.connect(self.convert_images_to_pdf)
         self.listbox.reordered.connect(self._resync_files_from_listbox)
@@ -267,13 +162,11 @@ class MainWindow(QtWidgets.QMainWindow):
         btns.addWidget(btn_clear)
         btns.addStretch(1)
 
-        # Окремим повноширинним рядком, бо це інша дія - не керування вже
-        # доданими файлами, а спосіб СТВОРИТИ вхідний PDF із зображень.
         self.btn_images = QtWidgets.QPushButton("Зображення → PDF...")
         self.btn_images.clicked.connect(lambda: self.convert_images_to_pdf(None))
         files_outer.addWidget(self.btn_images)
 
-        # ---- Куди зберегти - під списком файлів, та сама колонка ----
+        # ---- Куди зберегти ----
         grp_out = QtWidgets.QGroupBox("Куди зберегти результат")
         grp_out.setFont(bold)
         left_col.addWidget(grp_out)
@@ -286,7 +179,7 @@ class MainWindow(QtWidgets.QMainWindow):
         btn_out.clicked.connect(self.choose_out_dir)
         out_layout.addWidget(btn_out)
 
-        # ---- Текстові файли окремо від PDF - та сама ліва колонка ----
+        # ---- Текстові файли окремо ----
         grp_text = QtWidgets.QGroupBox("Текст окремо від PDF (необов'язково)")
         grp_text.setFont(bold)
         left_col.addWidget(grp_text)
@@ -309,14 +202,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.text_split_combo.addItems([
             "Один файл (усі сторінки)", "Окремий файл на кожну сторінку"])
         text_layout.addWidget(self.text_split_combo, 1, 1)
-        grp_text.setToolTip(
-            "Додатково зберігає розпізнаний і/або перекладений текст "
-            "як звичайний документ (без зображення сторінки) - зручно "
-            "для копіювання чи подальшого редагування тексту.")
-
         left_col.addStretch(1)
 
-        # ---- Права колонка: налаштування OCR ----
+        # ---- Права колонка: Налаштування OCR ----
         grp_opts = QtWidgets.QGroupBox("Розпізнавання (OCR)")
         grp_opts.setFont(bold)
         right_col.addWidget(grp_opts)
@@ -328,7 +216,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dpi_spin.setRange(150, 600)
         self.dpi_spin.setSingleStep(50)
         self.dpi_spin.setValue(300)
-        self.dpi_spin.setToolTip("Більше = точніше розпізнавання, менше = швидше")
         opts_layout.addWidget(self.dpi_spin, 0, 1, 1, 2)
 
         opts_layout.addWidget(QtWidgets.QLabel("Шрифт:"), 1, 0)
@@ -336,43 +223,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.font_edit.setPlaceholderText("типово - вбудований DejaVu Sans")
         opts_layout.addWidget(self.font_edit, 1, 1)
         btn_font = QtWidgets.QPushButton("Огляд...")
-        btn_font.setSizePolicy(
-            QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
         btn_font.clicked.connect(self.choose_font)
         opts_layout.addWidget(btn_font, 1, 2)
 
-        opts_layout.addWidget(QtWidgets.QLabel("Сторінки:"), 2, 0)
-        page_range_row = QtWidgets.QHBoxLayout()
-        page_range_row.setContentsMargins(0, 0, 0, 0)
-        self.page_start_spin = QtWidgets.QSpinBox()
-        self.page_start_spin.setRange(0, 99999)
-        self.page_start_spin.setValue(0)
-        self.page_start_spin.setSpecialValueText("з початку")
-        page_range_row.addWidget(self.page_start_spin)
-        page_range_row.addWidget(QtWidgets.QLabel("–"))
-        self.page_end_spin = QtWidgets.QSpinBox()
-        self.page_end_spin.setRange(0, 99999)
-        self.page_end_spin.setValue(0)
-        self.page_end_spin.setSpecialValueText("до кінця")
-        page_range_row.addWidget(self.page_end_spin)
-        page_range_widget = QtWidgets.QWidget()
-        page_range_widget.setLayout(page_range_row)
-        page_range_widget.setToolTip(
-            "Застосовується до КОЖНОГО файлу зі списку зліва однаково. "
-            "Корисно, щоб обробити лише перші кілька сторінок кожного файлу.")
-        opts_layout.addWidget(page_range_widget, 2, 1, 1, 2)
-
         self.chk_dewarp = QtWidgets.QCheckBox("Виправляти викривлення сторінки")
-        self.chk_dewarp.setChecked(False)
-        self.chk_dewarp.setToolTip(
-            "Для сканів/фото зігнутих сторінок книг. Повільніше (~2 сек/"
-            "сторінку), потребує пакет opencv-python-headless (~90 МБ). "
-            "Не завжди покращує результат на складних фото - вимкнено "
-            "за замовчуванням, безпечно лишати вимкненим."
-        )
-        opts_layout.addWidget(self.chk_dewarp, 3, 0, 1, 3)
-
-        opts_layout.setColumnStretch(1, 1)
+        opts_layout.addWidget(self.chk_dewarp, 2, 0, 1, 3)
 
         # ---- Що створити ----
         grp_tasks = QtWidgets.QGroupBox("Що створити")
@@ -381,21 +236,16 @@ class MainWindow(QtWidgets.QMainWindow):
         tasks_layout = QtWidgets.QVBoxLayout(grp_tasks)
         tasks_layout.setSpacing(3)
 
-        self.chk_searchable = QtWidgets.QCheckBox(
-            "Розпізнаваний PDF (виділюваний текст)")
+        self.chk_searchable = QtWidgets.QCheckBox("Розпізнаваний PDF (виділюваний текст)")
         self.chk_searchable.setChecked(True)
         self.chk_uk = QtWidgets.QCheckBox("Переклад українською")
-        self.chk_uk.setChecked(False)
         self.chk_ru = QtWidgets.QCheckBox("Переклад російською")
-        self.chk_ru.setChecked(False)
         self.chk_en = QtWidgets.QCheckBox("Переклад англійською")
-        self.chk_en.setChecked(False)
         for c in (self.chk_searchable, self.chk_uk, self.chk_ru, self.chk_en):
             tasks_layout.addWidget(c)
 
         tasks_layout.addSpacing(4)
-        self.chk_skip_existing = QtWidgets.QCheckBox(
-            "Пропускати файли, для яких результат уже є")
+        self.chk_skip_existing = QtWidgets.QCheckBox("Пропускати файли, для яких результат уже є")
         self.chk_skip_existing.setChecked(True)
         tasks_layout.addWidget(self.chk_skip_existing)
 
@@ -403,24 +253,43 @@ class MainWindow(QtWidgets.QMainWindow):
         btn_glossary.clicked.connect(self.edit_glossary)
         tasks_layout.addWidget(btn_glossary)
 
-        right_col.addStretch(1)
+        # ---- Керування обробкою ----
+        grp_actions = QtWidgets.QGroupBox("Керування обробкою")
+        grp_actions.setFont(bold)
+        right_col.addWidget(grp_actions)
+        actions_layout = QtWidgets.QVBoxLayout(grp_actions)
+        actions_layout.setSpacing(6)
 
-        # ---- Запуск + прогрес (на всю ширину, під двома колонками) ----
-        run_layout = QtWidgets.QHBoxLayout()
-        root_layout.addLayout(run_layout)
         self.start_btn = QtWidgets.QPushButton("Почати обробку")
+        self.start_btn.setIcon(create_vector_icon("play", "#FFFFFF"))
+        self.start_btn.setIconSize(QtCore.QSize(18, 18))
+        self.start_btn.setObjectName("BtnPrimary")
         self.start_btn.clicked.connect(self.start_processing)
-        run_layout.addWidget(self.start_btn)
+        actions_layout.addWidget(self.start_btn)
+
         self.cancel_btn = QtWidgets.QPushButton("Скасувати")
+        self.cancel_btn.setIcon(create_vector_icon("stop", "#FFFFFF"))
+        self.cancel_btn.setIconSize(QtCore.QSize(16, 16))
+        self.cancel_btn.setObjectName("BtnDanger")
         self.cancel_btn.setEnabled(False)
         self.cancel_btn.clicked.connect(self.cancel_processing)
-        run_layout.addWidget(self.cancel_btn)
+        actions_layout.addWidget(self.cancel_btn)
+
         self.btn_open_out = QtWidgets.QPushButton("Відкрити папку результатів")
+        self.btn_open_out.setIcon(create_vector_icon("folder", "#FFFFFF"))
+        self.btn_open_out.setIconSize(QtCore.QSize(18, 18))
+        self.btn_open_out.setObjectName("BtnSecondary")
         self.btn_open_out.clicked.connect(self.open_output_folder)
-        run_layout.addWidget(self.btn_open_out)
+        actions_layout.addWidget(self.btn_open_out)
+
+        right_col.addStretch(1)
+
+        # ---- Нижні індикатори ----
+        status_row = QtWidgets.QHBoxLayout()
+        root_layout.addLayout(status_row)
         self.status_label = QtWidgets.QLabel("Готово")
-        run_layout.addWidget(self.status_label)
-        run_layout.addStretch(1)
+        status_row.addWidget(self.status_label)
+        status_row.addStretch(1)
 
         self.progress = QtWidgets.QProgressBar()
         self.progress.setTextVisible(False)
@@ -442,16 +311,41 @@ class MainWindow(QtWidgets.QMainWindow):
         root_layout.addWidget(grp_log, 1)
         log_layout = QtWidgets.QVBoxLayout(grp_log)
         self.log_text = QtWidgets.QTextBrowser()
-        normal_font = QtGui.QFont()
-        normal_font.setBold(False)
-        self.log_text.setFont(normal_font)
         self.log_text.setOpenLinks(False)
         self.log_text.anchorClicked.connect(self._on_log_link_clicked)
         self.log_text.setReadOnly(True)
-        self.log_text.setMinimumHeight(140)
+        self.log_text.setMinimumHeight(120)
         log_layout.addWidget(self.log_text)
 
-    # ---------------- Дії ----------------
+    # ---------------- Меню ----------------
+    def _build_menu(self):
+        menubar = self.menuBar()
+        self.recent_menu = menubar.addMenu("Нещодавні файли")
+        self._populate_recent_menu()
+
+    def _populate_recent_menu(self):
+        self.recent_menu.clear()
+        recent = self.settings.value("recent_files", [], type=list) or []
+        if not recent:
+            empty = self.recent_menu.addAction("(порожньо)")
+            empty.setEnabled(False)
+            return
+        for path in recent:
+            action = self.recent_menu.addAction(path)
+            action.triggered.connect(
+                lambda checked=False, p=path: self._add_files_list([p]) if os.path.isfile(p)
+                else QtWidgets.QMessageBox.warning(self, "Файл не знайдено", f"Файла більше немає:\n{p}")
+            )
+
+    def _add_recent_file(self, path):
+        recent = self.settings.value("recent_files", [], type=list) or []
+        recent = [p for p in recent if p != path]
+        recent.insert(0, path)
+        recent = recent[:10]
+        self.settings.setValue("recent_files", recent)
+        self._populate_recent_menu()
+
+    # ---------------- Логіка та обробники ----------------
     def _add_files_list(self, paths):
         added = False
         for p in paths:
@@ -465,8 +359,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return added
 
     def _resync_files_from_listbox(self):
-        self.files = [self.listbox.item(i).text()
-                      for i in range(self.listbox.count())]
+        self.files = [self.listbox.item(i).text() for i in range(self.listbox.count())]
 
     def add_files(self):
         paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
@@ -504,13 +397,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if len(image_paths) > 1:
             box = QtWidgets.QMessageBox(self)
             box.setWindowTitle("Формат результату")
-            box.setText(
-                f"Вибрано {len(image_paths)} зображень. Як зібрати їх у PDF?"
-            )
-            btn_combined = box.addButton(
-                "Один PDF (усі сторінки разом)", QtWidgets.QMessageBox.AcceptRole)
-            btn_separate = box.addButton(
-                "Окремий PDF для кожного", QtWidgets.QMessageBox.ActionRole)
+            box.setText(f"Вибрано {len(image_paths)} зображень. Як зібрати їх у PDF?")
+            btn_combined = box.addButton("Один PDF (усі сторінки)", QtWidgets.QMessageBox.AcceptRole)
+            btn_separate = box.addButton("Окремий PDF для кожного", QtWidgets.QMessageBox.ActionRole)
             box.addButton("Скасувати", QtWidgets.QMessageBox.RejectRole)
             box.exec_()
             clicked = box.clickedButton()
@@ -524,8 +413,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if mode == "combined":
             default_name = os.path.splitext(os.path.basename(image_paths[0]))[0] + ".pdf"
             out_target, _ = QtWidgets.QFileDialog.getSaveFileName(
-                self, "Зберегти як PDF",
-                os.path.join(self.last_dir, default_name), "PDF files (*.pdf)",
+                self, "Зберегти як PDF", os.path.join(self.last_dir, default_name), "PDF files (*.pdf)"
             )
             if not out_target:
                 return
@@ -565,8 +453,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     image_paths, out_target, log_fn=self.log,
                     progress_fn=progress_cb, cancel_event=self.cancel_event,
                 )
-                self.signals.log.emit(
-                    f"Створено PDF з {len(image_paths)} зображень: {out_target}")
+                self.signals.log.emit(f"Створено PDF: {out_target}")
                 self.signals.image_conversion_done.emit(out_target)
             else:
                 total = len(image_paths)
@@ -578,13 +465,10 @@ class MainWindow(QtWidgets.QMainWindow):
                     images_to_pdf([img_path], out_path, log_fn=self.log)
                     self.signals.image_conversion_done.emit(out_path)
                     progress_cb(i + 1, total)
-                self.signals.log.emit(
-                    f"Створено {total} окремих PDF-файлів у папці: {out_target}")
         except ProcessingCancelled:
-            self.signals.log.emit(">>> Конвертацію скасовано користувачем.")
+            self.signals.log.emit(">>> Скасовано користувачем.")
         except Exception:
-            self.signals.log.emit(
-                f"[ПОМИЛКА] Не вдалося створити PDF із зображень:\n{traceback.format_exc()}")
+            self.signals.log.emit(f"[ПОМИЛКА]:\n{traceback.format_exc()}")
         finally:
             self.signals.status.emit("Готово")
             self.signals.finished.emit()
@@ -594,7 +478,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def choose_font(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Виберіть TTF-шрифт з кирилицею", self.last_dir, "TrueType Font (*.ttf)")
+            self, "Виберіть TTF-шрифт", self.last_dir, "TrueType Font (*.ttf)")
         if path:
             self.font_edit.setText(path)
             self.last_dir = os.path.dirname(path)
@@ -611,19 +495,13 @@ class MainWindow(QtWidgets.QMainWindow):
         if not out_dir:
             return
         os.makedirs(out_dir, exist_ok=True)
-        QtGui.QDesktopServices.openUrl(
-            QtCore.QUrl.fromLocalFile(out_dir))
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(out_dir))
 
     def edit_glossary(self):
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("Глосарій - терміни, які не перекладати")
         layout = QtWidgets.QVBoxLayout(dlg)
-        hint = QtWidgets.QLabel(
-            "По одному терміну на рядок (без урахування регістру). Такі "
-            "рядки тексту завжди лишаються як в оригіналі - зручно для "
-            "кодів, назв моделей, абревіатур (напр. EVIC, ESC)."
-        )
-        hint.setWordWrap(True)
+        hint = QtWidgets.QLabel("По одному терміну на рядок (без урахування регістру).")
         layout.addWidget(hint)
         edit = QtWidgets.QPlainTextEdit()
         edit.setPlainText("\n".join(sorted(self.glossary_terms)))
@@ -633,7 +511,7 @@ class MainWindow(QtWidgets.QMainWindow):
         buttons.accepted.connect(dlg.accept)
         buttons.rejected.connect(dlg.reject)
         layout.addWidget(buttons)
-        dlg.resize(420, 320)
+        dlg.resize(400, 300)
         if dlg.exec_() == QtWidgets.QDialog.Accepted:
             terms = {
                 line.strip().lower()
@@ -641,50 +519,6 @@ class MainWindow(QtWidgets.QMainWindow):
             }
             self.glossary_terms = terms
             self.settings.setValue("glossary_terms", "\n".join(sorted(terms)))
-
-    # ---------------- Меню / налаштування, що зберігаються між запусками ----------------
-    def _build_menu(self):
-        menubar = self.menuBar()
-
-        file_menu = menubar.addMenu("Файл")
-        self.recent_menu = file_menu.addMenu("Нещодавні файли")
-        self._populate_recent_menu()
-
-        view_menu = menubar.addMenu("Вигляд")
-        self.dark_theme_action = QtWidgets.QAction(
-            "Темна тема", self, checkable=True)
-        self.dark_theme_action.toggled.connect(self._apply_dark_theme)
-        view_menu.addAction(self.dark_theme_action)
-
-    def _populate_recent_menu(self):
-        self.recent_menu.clear()
-        recent = self.settings.value("recent_files", [], type=list) or []
-        if not recent:
-            empty = self.recent_menu.addAction("(порожньо)")
-            empty.setEnabled(False)
-            return
-        for path in recent:
-            action = self.recent_menu.addAction(path)
-            action.triggered.connect(
-                lambda checked=False, p=path: self._add_files_list([p]) if os.path.isfile(p)
-                else QtWidgets.QMessageBox.warning(self, "Файл не знайдено", f"Файла більше немає:\n{p}")
-            )
-
-    def _add_recent_file(self, path):
-        recent = self.settings.value("recent_files", [], type=list) or []
-        recent = [p for p in recent if p != path]
-        recent.insert(0, path)
-        recent = recent[:10]
-        self.settings.setValue("recent_files", recent)
-        self._populate_recent_menu()
-
-    def _apply_dark_theme(self, enabled):
-        app = QtWidgets.QApplication.instance()
-        if enabled:
-            app.setStyleSheet(_DARK_STYLESHEET)
-        else:
-            app.setStyleSheet("")
-        self.settings.setValue("dark_theme", enabled)
 
     def _load_settings(self):
         s = self.settings
@@ -707,10 +541,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.glossary_terms = {
             t.strip().lower() for t in terms_str.splitlines() if t.strip()
         }
-
-        dark = s.value("dark_theme", False, type=bool)
-        self.dark_theme_action.setChecked(dark)
-        self._apply_dark_theme(dark)
 
         geometry = s.value("window_geometry")
         if geometry is not None:
@@ -737,14 +567,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._save_settings()
         super().closeEvent(event)
 
-    # ---------------- Лог/прогрес (виконуються в головному потоці - слоти) ----------------
     def _append_log(self, msg):
         prefix = "  -> Збережено: "
         if msg.startswith(prefix):
             path = msg[len(prefix):].strip()
             url = QtCore.QUrl.fromLocalFile(path).toString()
-            self.log_text.append(
-                f'{prefix}<a href="{url}">{html.escape(path)}</a>')
+            self.log_text.append(f'{prefix}<a href="{url}">{html.escape(path)}</a>')
         else:
             self.log_text.append(html.escape(msg))
         QtCore.QCoreApplication.processEvents()
@@ -784,27 +612,17 @@ class MainWindow(QtWidgets.QMainWindow):
                 pass
         self.signals.log.emit(msg)
 
-    # ---------------- Обробка ----------------
     def start_processing(self):
         if not self.files:
-            QtWidgets.QMessageBox.warning(
-                self, "Немає файлів", "Спочатку додайте хоча б один PDF-файл.")
+            QtWidgets.QMessageBox.warning(self, "Немає файлів", "Спочатку додайте хоча б один PDF-файл.")
             return
         if not (self.chk_searchable.isChecked() or self.chk_uk.isChecked()
                 or self.chk_ru.isChecked() or self.chk_en.isChecked()):
-            QtWidgets.QMessageBox.warning(
-                self, "Нічого робити", "Виберіть хоча б одну дію у розділі «Що створити».")
+            QtWidgets.QMessageBox.warning(self, "Нічого робити", "Виберіть дію у розділі «Що створити».")
             return
 
         if not TESSERACT_CMD:
-            QtWidgets.QMessageBox.critical(
-                self, "Tesseract не знайдено",
-                "Не вдалося знайти виконуваний файл Tesseract OCR.\n\n"
-                "Linux: sudo apt install tesseract-ocr tesseract-ocr-ukr tesseract-ocr-rus\n"
-                "Windows: https://github.com/UB-Mannheim/tesseract/wiki\n\n"
-                "OCR запуститься лише для сторінок без текстового шару — "
-                "якщо всі ваші PDF уже мають текст, можна продовжити і без нього.",
-            )
+            QtWidgets.QMessageBox.critical(self, "Tesseract не знайдено", "Не знайдено Tesseract OCR.")
             return
 
         if self.chk_dewarp.isChecked():
@@ -812,8 +630,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 _lazy_import_cv2()
             except RuntimeError as e:
                 choice = QtWidgets.QMessageBox.warning(
-                    self, "Пакет для розпрямлення не встановлено", str(e) +
-                    "\n\nПродовжити обробку БЕЗ розпрямлення сторінок?",
+                    self, "Немає OpenCV", str(e) + "\n\nПродовжити без розпрямлення?",
                     QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel,
                 )
                 if choice != QtWidgets.QMessageBox.Yes:
@@ -822,26 +639,19 @@ class MainWindow(QtWidgets.QMainWindow):
 
         make_searchable = self.chk_searchable.isChecked()
         translate_targets = []
-        if self.chk_uk.isChecked():
-            translate_targets.append("uk")
-        if self.chk_ru.isChecked():
-            translate_targets.append("ru")
-        if self.chk_en.isChecked():
-            translate_targets.append("en")
+        if self.chk_uk.isChecked(): translate_targets.append("uk")
+        if self.chk_ru.isChecked(): translate_targets.append("ru")
+        if self.chk_en.isChecked(): translate_targets.append("en")
 
         dpi = self.dpi_spin.value()
         font_path = self.font_edit.text().strip() or None
         out_dir = self.out_dir_edit.text().strip()
-        page_start = self.page_start_spin.value() or None
-        page_end = self.page_end_spin.value() or None
         skip_existing = self.chk_skip_existing.isChecked()
         glossary = set(self.glossary_terms)
         dewarp = self.chk_dewarp.isChecked()
         export_text_formats = set()
-        if self.chk_text_docx.isChecked():
-            export_text_formats.add("docx")
-        if self.chk_text_txt.isChecked():
-            export_text_formats.add("txt")
+        if self.chk_text_docx.isChecked(): export_text_formats.add("docx")
+        if self.chk_text_txt.isChecked(): export_text_formats.add("txt")
         export_text_split = self.text_split_combo.currentIndex() == 1
 
         self._save_settings()
@@ -859,7 +669,7 @@ class MainWindow(QtWidgets.QMainWindow):
             args=(
                 list(self.files), out_dir, dpi,
                 make_searchable, translate_targets, font_path,
-                page_start, page_end, skip_existing, glossary, dewarp,
+                skip_existing, glossary, dewarp,
                 export_text_formats, export_text_split,
             ),
             daemon=True,
@@ -869,7 +679,6 @@ class MainWindow(QtWidgets.QMainWindow):
     def cancel_processing(self):
         self.cancel_event.set()
         self.signals.status.emit("Скасування...")
-        self.log(">>> Скасування... зачекайте завершення поточної сторінки.")
 
     def _expected_outputs(self, path, out_dir, make_searchable, translate_targets):
         base_name = os.path.splitext(os.path.basename(path))[0]
@@ -881,7 +690,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return expected
 
     def _run_worker(self, files, out_dir, dpi, make_searchable, translate_targets,
-                     font_path, page_start, page_end, skip_existing, glossary, dewarp,
+                     font_path, skip_existing, glossary, dewarp,
                      export_text_formats, export_text_split):
         done = 0
         total = len(files)
@@ -889,19 +698,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
         for path in files:
             if self.cancel_event.is_set():
-                self.log(">>> Обробку скасовано користувачем.")
                 break
 
             if skip_existing:
-                expected = self._expected_outputs(
-                    path, out_dir, make_searchable, translate_targets)
+                expected = self._expected_outputs(path, out_dir, make_searchable, translate_targets)
                 if expected and all(os.path.isfile(p) for p in expected):
-                    self.log(
-                        f"=== Пропущено (результат уже є): {os.path.basename(path)} ===")
+                    self.log(f"=== Пропущено (уже є): {os.path.basename(path)} ===")
                     done += 1
                     self.signals.progress.emit(done)
                     self.signals.status.emit(f"Обробка: {done}/{total}")
-                    time.sleep(0.001)
                     continue
 
             def page_progress_cb(page_num, n_pages):
@@ -911,42 +716,25 @@ class MainWindow(QtWidgets.QMainWindow):
             try:
                 self.log(f"=== Обробка: {os.path.basename(path)} ===")
                 saved, low_conf_pages = process_pdf(
-                    input_path=path,
-                    output_dir=out_dir,
-                    dpi=dpi,
-                    make_searchable=make_searchable,
-                    translate_targets=translate_targets,
-                    font_path=font_path,
-                    log_fn=self.log,
-                    cancel_event=self.cancel_event,
-                    page_start=page_start,
-                    page_end=page_end,
-                    page_progress_fn=page_progress_cb,
-                    glossary=glossary,
-                    dewarp=dewarp,
-                    export_text_formats=export_text_formats,
+                    input_path=path, output_dir=out_dir, dpi=dpi,
+                    make_searchable=make_searchable, translate_targets=translate_targets,
+                    font_path=font_path, log_fn=self.log, cancel_event=self.cancel_event,
+                    page_start=None, page_end=None, page_progress_fn=page_progress_cb,
+                    glossary=glossary, dewarp=dewarp, export_text_formats=export_text_formats,
                     export_text_split_pages=export_text_split,
                 )
                 for s in saved:
                     self.log(f"  -> Збережено: {s}")
                 if low_conf_pages:
-                    all_low_confidence.append(
-                        (os.path.basename(path), low_conf_pages))
+                    all_low_confidence.append((os.path.basename(path), low_conf_pages))
             except ProcessingCancelled:
-                self.log(">>> Обробку скасовано користувачем.")
+                self.log(">>> Обробку скасовано.")
                 break
             except Exception:
                 self.log(f"[ПОМИЛКА] {path}:\n{traceback.format_exc()}")
             done += 1
             self.signals.progress.emit(done)
             self.signals.status.emit(f"Обробка: {done}/{total}")
-            time.sleep(0.001)
-
-        if all_low_confidence:
-            self.log("=== Сторінки з невисокою впевненістю OCR (варто перевірити) ===")
-            for fname, pages in all_low_confidence:
-                pages_str = ", ".join(str(p) for p in pages)
-                self.log(f"  {fname}: сторінки {pages_str}")
 
         self.signals.status.emit("Готово")
         self.log("=== Готово ===")
