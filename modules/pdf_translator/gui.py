@@ -211,23 +211,31 @@ class MainWindow(QtWidgets.QMainWindow):
         opts_layout = QtWidgets.QGridLayout(grp_opts)
         opts_layout.setVerticalSpacing(4)
 
-        opts_layout.addWidget(QtWidgets.QLabel("DPI:"), 0, 0)
+        opts_layout.addWidget(QtWidgets.QLabel("Мова оригіналу:"), 0, 0)
+        self.src_lang_combo = QtWidgets.QComboBox()
+        self.src_lang_combo.addItem("Автовизначення", "auto")
+        self.src_lang_combo.addItem("Українська + Англійська (змішаний)", "ukr+eng")
+        self.src_lang_combo.addItem("Українська", "ukr")
+        self.src_lang_combo.addItem("Англійська", "eng")
+        opts_layout.addWidget(self.src_lang_combo, 0, 1, 1, 2)
+
+        opts_layout.addWidget(QtWidgets.QLabel("DPI:"), 1, 0)
         self.dpi_spin = QtWidgets.QSpinBox()
         self.dpi_spin.setRange(150, 600)
         self.dpi_spin.setSingleStep(50)
         self.dpi_spin.setValue(300)
-        opts_layout.addWidget(self.dpi_spin, 0, 1, 1, 2)
+        opts_layout.addWidget(self.dpi_spin, 1, 1, 1, 2)
 
-        opts_layout.addWidget(QtWidgets.QLabel("Шрифт:"), 1, 0)
+        opts_layout.addWidget(QtWidgets.QLabel("Шрифт:"), 2, 0)
         self.font_edit = QtWidgets.QLineEdit()
         self.font_edit.setPlaceholderText("типово - вбудований DejaVu Sans")
-        opts_layout.addWidget(self.font_edit, 1, 1)
+        opts_layout.addWidget(self.font_edit, 2, 1)
         btn_font = QtWidgets.QPushButton("Огляд...")
         btn_font.clicked.connect(self.choose_font)
-        opts_layout.addWidget(btn_font, 1, 2)
+        opts_layout.addWidget(btn_font, 2, 2)
 
         self.chk_dewarp = QtWidgets.QCheckBox("Виправляти викривлення сторінки")
-        opts_layout.addWidget(self.chk_dewarp, 2, 0, 1, 3)
+        opts_layout.addWidget(self.chk_dewarp, 3, 0, 1, 3)
 
         # ---- Що створити ----
         grp_tasks = QtWidgets.QGroupBox("Що створити")
@@ -522,6 +530,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _load_settings(self):
         s = self.settings
+        self.src_lang_combo.setCurrentIndex(int(s.value("src_lang_index", 0)))
         self.dpi_spin.setValue(int(s.value("dpi", 300)))
         self.out_dir_edit.setText(str(s.value(
             "out_dir", os.path.join(os.path.expanduser("~"), "pdf_ocr_output"))))
@@ -548,6 +557,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _save_settings(self):
         s = self.settings
+        s.setValue("src_lang_index", self.src_lang_combo.currentIndex())
         s.setValue("dpi", self.dpi_spin.value())
         s.setValue("out_dir", self.out_dir_edit.text().strip())
         s.setValue("font_path", self.font_edit.text().strip())
@@ -630,7 +640,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 _lazy_import_cv2()
             except RuntimeError as e:
                 choice = QtWidgets.QMessageBox.warning(
-                    self, "Немає OpenCV", str(e) + "\n\nПродовжити без розпрямлення?",
+                    self, "Немає OpenCV", str(e) + "\n\nПродовжити বিনা розпрямлення?",
                     QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel,
                 )
                 if choice != QtWidgets.QMessageBox.Yes:
@@ -642,6 +652,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.chk_uk.isChecked(): translate_targets.append("uk")
         if self.chk_ru.isChecked(): translate_targets.append("ru")
         if self.chk_en.isChecked(): translate_targets.append("en")
+
+        source_lang = self.src_lang_combo.currentData()
 
         dpi = self.dpi_spin.value()
         font_path = self.font_edit.text().strip() or None
@@ -671,6 +683,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 make_searchable, translate_targets, font_path,
                 skip_existing, glossary, dewarp,
                 export_text_formats, export_text_split,
+                source_lang,
             ),
             daemon=True,
         )
@@ -691,7 +704,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _run_worker(self, files, out_dir, dpi, make_searchable, translate_targets,
                      font_path, skip_existing, glossary, dewarp,
-                     export_text_formats, export_text_split):
+                     export_text_formats, export_text_split, source_lang):
         done = 0
         total = len(files)
         all_low_confidence = []
@@ -722,6 +735,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     page_start=None, page_end=None, page_progress_fn=page_progress_cb,
                     glossary=glossary, dewarp=dewarp, export_text_formats=export_text_formats,
                     export_text_split_pages=export_text_split,
+                    source_lang=source_lang,
                 )
                 for s in saved:
                     self.log(f"  -> Збережено: {s}")

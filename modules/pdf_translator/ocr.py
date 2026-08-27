@@ -55,67 +55,72 @@ if TESSERACT_CMD:
 
 
 def _brute_force_orientation(pil_img, log_fn=None):
-    """Резервний метод, коли вбудований OSD Tesseract на оригінальному
-    зображенні не може впевнено визначити орієнтацію (типово - сторінка
-    з малою кількістю тексту, багато картинок, як приладова панель авто).
+    """
+    Перебір 4 кутів повороту для OSD.
+    Знижено поріг confidence з 1.0 до 0.1, оскільки на діаграмах/панелях
+    Tesseract рідко дає високу впевненість.
+    """
+    # Готуємо контрастну версію спеціально для перевірки OSD
+    prep_img = preprocess_for_ocr(pil_img)
 
-    Ідея: замість одного невпевненого запитання "як повернута сторінка?"
-    ставимо OSD чотири РІЗНІ, простіші запитання - для кожної з 4
-    можливих орієнтацій кандидата запитуємо "чи ТИ вже прямий?" (тобто
-    чи OSD скаже rotate=0 саме для цього варіанта). Обираємо кандидата
-    з найвищою впевненістю серед тих, хто відповів "так"."""
-    best_angle, best_conf = None, -1.0
+    best_angle, best_conf = 0, -1.0
     for angle in (0, 90, 180, 270):
-        time.sleep(0.001)  # Даємо GIL вивільнитись для UI
-        candidate = pil_img.rotate(-angle, expand=True) if angle else pil_img
+        time.sleep(0.001)
+        candidate = prep_img.rotate(-angle, expand=True) if angle else prep_img
         try:
             osd = pytesseract.image_to_osd(
-                candidate, output_type=pytesseract.Output.DICT)
+                candidate, config="--psm 0", output_type=pytesseract.Output.DICT
+            )
         except Exception:
             continue
+
         rotate_val = osd.get("rotate", None)
         if rotate_val is None or int(rotate_val) != 0:
             continue
+
         conf = float(osd.get("orientation_conf", 0) or 0)
         if conf > best_conf:
             best_conf, best_angle = conf, angle
-    if best_angle is None:
-        return 0, -1.0
-    return best_angle, best_conf
+
+    # Якщо знайшли кут з хоч якоюсь впевненістю (> 0.1)
+    if best_angle != 0 and best_conf > 0.1:
+        return best_angle, best_conf
+
+    return 0, -1.0
 
 
 def detect_and_fix_orientation(pil_img, log_fn=None):
-    """Визначає, чи сторінка повернута на 90/180/270° і виправляє її."""
+    """Визначає поворот сторінки та повертає виправлений PIL.Image."""
     angle, conf = 0, 0.0
+
+    # Використовуємо оброблене зображення для визначення орієнтації
+    prep_img = preprocess_for_ocr(pil_img)
+
     try:
         osd = pytesseract.image_to_osd(
-            pil_img, output_type=pytesseract.Output.DICT)
+            prep_img, config="--psm 0", output_type=pytesseract.Output.DICT
+        )
         angle = int(osd.get("rotate", 0) or 0)
         conf = float(osd.get("orientation_conf", 0) or 0)
     except Exception:
         pass
 
-    if angle == 0 and conf >= 1.0:
-        return pil_img, False
-
-    if conf < 1.0:
+    # Якщо прямому виклику OSD бракує впевненості (менше 0.5), пускаємо перебір
+    if conf < 0.5:
         fallback_angle, fallback_conf = _brute_force_orientation(
             pil_img, log_fn=log_fn)
-        if fallback_angle == 0 or fallback_conf < 1.0:
-            return pil_img, False
-        angle = fallback_angle
+        if fallback_angle != 0:
+            angle = fallback_angle
+            conf = fallback_conf
+
+    if angle != 0:
         if log_fn:
             log_fn(
-                f"  Орієнтація: основний OSD не певен, за результатом "
-                f"перебору обрано поворот на {angle}° (впевненість {fallback_conf:.1f})")
+                f"  Орієнтація: сторінку повернуто на {angle}° (conf: {conf:.1f}), виправляю...")
+        # Повертаємо ОРИГІНАЛЬНЕ зображення, але повернуте на потрібний кут
         return pil_img.rotate(-angle, expand=True), True
 
-    if angle == 0:
-        return pil_img, False
-
-    if log_fn:
-        log_fn(f"  Орієнтація: сторінку повернуто на {angle}°, виправляю...")
-    return pil_img.rotate(-angle, expand=True), True
+    return pil_img, False
 
 
 def preprocess_for_ocr(pil_img):
@@ -260,7 +265,7 @@ def _group_words_into_lines(words):
     return groups
 
 
-def ocr_lines_from_image(pil_img, min_confidence=0):
+def ocr_lines_from_image(pil_img, min_confidence=0, source_lang="auto"):
     """Запускає Tesseract на зображенні сторінки та повертає рядки та впевненість."""
     if not TESSERACT_CMD:
         raise RuntimeError(
@@ -274,14 +279,18 @@ def ocr_lines_from_image(pil_img, min_confidence=0):
 
     config = "--oem 1 --psm 6"
 
-    data_latin = _run_tesseract_pass(proc_img, _LATIN_LANGS, config)
-    time.sleep(0.001)  # Пауза для GIL
-    data_cyr = _run_tesseract_pass(proc_img, _CYRILLIC_LANGS, config)
+    if source_lang == "auto":
+        data_latin = _run_tesseract_pass(proc_img, _LATIN_LANGS, config)
+        time.sleep(0.001)  # Пауза для GIL
+        data_cyr = _run_tesseract_pass(proc_img, _CYRILLIC_LANGS, config)
 
-    score_latin = _pass_score(data_latin)
-    score_cyr = _pass_score(data_cyr)
-    data, score = (data_latin, score_latin) if score_latin >= score_cyr else (
-        data_cyr, score_cyr)
+        score_latin = _pass_score(data_latin)
+        score_cyr = _pass_score(data_cyr)
+        data, score = (data_latin, score_latin) if score_latin >= score_cyr else (
+            data_cyr, score_cyr)
+    else:
+        data = _run_tesseract_pass(proc_img, source_lang, config)
+        score = _pass_score(data)
 
     words = _extract_words(data, min_confidence)
     groups = _group_words_into_lines(words)

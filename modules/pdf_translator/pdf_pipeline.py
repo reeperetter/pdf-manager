@@ -436,7 +436,7 @@ def process_pdf(
                 log_fn(
                     f"[{base_name}] Сторінка {page_num}/{n_pages}: "
                     f"орієнтацію змінено — розпізнавання (OCR) за новими координатами...")
-                lines, ocr_score = ocr_lines_from_image(pil_img)
+                lines, ocr_score = ocr_lines_from_image(pil_img, source_lang=source_lang)
                 if lines and ocr_score < low_confidence_threshold:
                     low_confidence_pages.append(page_num)
                     log_fn(
@@ -452,7 +452,7 @@ def process_pdf(
                     log_fn(
                         f"[{base_name}] Сторінка {page_num}/{n_pages}: "
                         f"немає текстового шару — розпізнавання (OCR)...")
-                    lines, ocr_score = ocr_lines_from_image(pil_img)
+                    lines, ocr_score = ocr_lines_from_image(pil_img, source_lang=source_lang)
                     if lines and ocr_score < low_confidence_threshold:
                         low_confidence_pages.append(page_num)
                         log_fn(
