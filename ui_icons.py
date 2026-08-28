@@ -35,6 +35,25 @@ def create_vector_icon(icon_type: str, color: str = "#8C4A1B", size: int = 32) -
         p.setBrush(main_color)
         p.drawRoundedRect(7, 7, 18, 18, 4, 4)
 
+    elif icon_type == "compress":
+        # Дві стрілки, що "стискають" вміст до центру, як символ архівації
+        p.drawLine(6, 10, 6, 22)
+        p.drawLine(26, 10, 26, 22)
+        path_left = QtGui.QPainterPath()
+        path_left.moveTo(6, 16)
+        path_left.lineTo(13, 12)
+        path_left.lineTo(13, 20)
+        path_left.closeSubpath()
+        p.setBrush(main_color)
+        p.drawPath(path_left)
+
+        path_right = QtGui.QPainterPath()
+        path_right.moveTo(26, 16)
+        path_right.lineTo(19, 12)
+        path_right.lineTo(19, 20)
+        path_right.closeSubpath()
+        p.drawPath(path_right)
+
     elif icon_type == "folder":
         path = QtGui.QPainterPath()
         path.moveTo(4, 8)

@@ -3,6 +3,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from ui_icons import create_vector_icon
 from modules.pdf_translator.gui import MainWindow as PDFTranslatorWidget
 from modules.pdf_cropper.cropper_widget import PDFBatchCropperWidget
+from modules.pdf_compressor.compressor_widget import PDFBatchCompressorWidget
 
 
 class ModernSidebar(QtWidgets.QFrame):
@@ -36,9 +37,11 @@ class ModernSidebar(QtWidgets.QFrame):
 
         self.btn_ocr = self._create_nav_button("OCR та Переклад", "ocr", 0)
         self.btn_crop = self._create_nav_button("Пакетна Обрізка", "crop", 1)
+        self.btn_compress = self._create_nav_button("Стиснення PDF", "compress", 2)
 
         layout.addWidget(self.btn_ocr)
         layout.addWidget(self.btn_crop)
+        layout.addWidget(self.btn_compress)
 
         layout.addStretch()
 
@@ -88,9 +91,11 @@ class MainHubWindow(QtWidgets.QMainWindow):
 
         self.translator_widget = PDFTranslatorWidget()
         self.cropper_widget = PDFBatchCropperWidget()
+        self.compressor_widget = PDFBatchCompressorWidget()
 
         self.stack.addWidget(self.translator_widget)
         self.stack.addWidget(self.cropper_widget)
+        self.stack.addWidget(self.compressor_widget)
 
         main_layout.addWidget(self.stack, stretch=1)
 
