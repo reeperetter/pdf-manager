@@ -8,10 +8,10 @@ from PyQt5.QtWidgets import (
     QGraphicsRectItem, QGraphicsItem, QGraphicsTextItem,
     QGraphicsPixmapItem, QListWidget, QListWidgetItem, QStyle
 )
-from PyQt5.QtCore import Qt, QRectF, QPointF
+from PyQt5.QtCore import Qt, QRectF, QPointF, QSize
 from PyQt5.QtGui import (
     QPen, QBrush, QColor, QCursor, QPixmap, QImage,
-    QKeySequence, QTransform
+    QKeySequence, QTransform, QIcon
 )
 
 
@@ -123,12 +123,10 @@ class PDFCropView(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
 
-        # Перекриваємо стиль переглядача та його viewport
         self.setStyleSheet("QGraphicsView { background-color: #d0d0d0; border: 1px solid #cccccc; }")
         self.setBackgroundBrush(QBrush(QColor(208, 208, 208)))
 
     def _get_cropper_widget(self):
-        """Шукає батьківський віджет PDFBatchCropperWidget."""
         parent = self.parent()
         while parent and not isinstance(parent, PDFBatchCropperWidget):
             parent = parent.parent()
@@ -253,61 +251,101 @@ class PDFBatchCropperWidget(QWidget):
 
         self.file_list_paths = []
         self.file_crop_rects = {}
+        self.file_rotations = {}
         self.crop_item = None
 
         self.init_ui()
         self.init_shortcuts()
 
+    def get_style_icon(self, standard_pixmap):
+        return self.style().standardIcon(standard_pixmap)
+
     def init_ui(self):
+        # Очищуємо CSS-падінги для кнопок
+        self.setStyleSheet("""
+            QPushButton {
+                padding: 4px 6px;
+            }
+        """)
+
         left_panel = QWidget()
         left_layout = QVBoxLayout()
+        left_layout.setSpacing(6)
 
-        btn_add_files = QPushButton("➕ Додати PDF (Ctrl+O)")
+        btn_add_files = QPushButton("Додати PDF (Ctrl+O)")
+        btn_add_files.setIcon(self.get_style_icon(QStyle.SP_DialogOpenButton))
+        btn_add_files.setMinimumHeight(32)
         btn_add_files.clicked.connect(self.add_files)
 
-        btn_clear_list = QPushButton("🗑 Очистити список")
+        btn_clear_list = QPushButton("Очистити список")
+        btn_clear_list.setIcon(self.get_style_icon(QStyle.SP_TrashIcon))
+        btn_clear_list.setMinimumHeight(30)
         btn_clear_list.clicked.connect(self.clear_file_list)
 
         self.file_list_widget = DropListWidget(self)
         self.file_list_widget.currentRowChanged.connect(self.on_file_selected)
 
-        btn_apply_to_all = QPushButton("🌐 Застосувати рамку до ВСІХ")
-        btn_apply_to_all.clicked.connect(self.apply_crop_to_all_files)
+        # Три кнопки для керування параметрами пакетної обробки
+        btn_apply_crop = QPushButton(" Застосувати РАМКУ до всіх")
+        btn_apply_crop.setIcon(self.get_style_icon(QStyle.SP_FileDialogListView))
+        btn_apply_crop.setMinimumHeight(32)
+        btn_apply_crop.clicked.connect(self.apply_crop_to_all_files)
+
+        btn_apply_rot = QPushButton(" Застосувати ПОВОРОТ до всіх")
+        btn_apply_rot.setIcon(self.get_style_icon(QStyle.SP_BrowserReload))
+        btn_apply_rot.setMinimumHeight(32)
+        btn_apply_rot.clicked.connect(self.apply_rotation_to_all_files)
+
+        btn_apply_all = QPushButton(" Застосувати РАМКУ + ПОВОРОТ")
+        btn_apply_all.setIcon(self.get_style_icon(QStyle.SP_DialogApplyButton))
+        btn_apply_all.setMinimumHeight(34)
+        btn_apply_all.clicked.connect(self.apply_crop_and_rotation_to_all)
 
         left_layout.addWidget(btn_add_files)
         left_layout.addWidget(btn_clear_list)
         left_layout.addWidget(QLabel("Файли (перетягніть PDF сюди):"))
         left_layout.addWidget(self.file_list_widget)
-        left_layout.addWidget(btn_apply_to_all)
+        left_layout.addWidget(btn_apply_crop)
+        left_layout.addWidget(btn_apply_rot)
+        left_layout.addWidget(btn_apply_all)
         left_panel.setLayout(left_layout)
 
         right_panel = QWidget()
         right_layout = QVBoxLayout()
 
         nav_layout = QHBoxLayout()
-        self.btn_prev = QPushButton("< Назад (←)")
+        nav_layout.setContentsMargins(0, 0, 0, 0)
+        nav_layout.setSpacing(6)
+
+        self.btn_prev = QPushButton("Назад")
+        self.btn_prev.setIcon(self.get_style_icon(QStyle.SP_ArrowLeft))
         self.btn_prev.clicked.connect(self.prev_page)
         self.btn_prev.setEnabled(False)
 
-        self.btn_next = QPushButton("Вперед (→)")
+        self.btn_next = QPushButton("Вперед")
+        self.btn_next.setIcon(self.get_style_icon(QStyle.SP_ArrowRight))
         self.btn_next.clicked.connect(self.next_page)
         self.btn_next.setEnabled(False)
 
         self.page_label = QLabel("Сторінка: 0 / 0")
 
-        btn_rot_left = QPushButton("⟲ 90°")
+        btn_rot_left = QPushButton("-90°")
+        btn_rot_left.setIcon(self.get_style_icon(QStyle.SP_ArrowBack))
         btn_rot_left.clicked.connect(lambda: self.rotate_page(-90))
-        btn_rot_right = QPushButton("⟳ 90°")
+
+        btn_rot_right = QPushButton("+90°")
+        btn_rot_right.setIcon(self.get_style_icon(QStyle.SP_ArrowForward))
         btn_rot_right.clicked.connect(lambda: self.rotate_page(90))
 
         self.combo_preset = QComboBox()
-        self.combo_preset.addItems(["Власна рамка", "Пропорція A4", "Пропорція 16:9", "Пропорція 4:3", "Квадрат (1:1)"])
-        self.combo_preset.currentIndexChanged.connect(self.apply_preset)
+        self.combo_preset.addItems(["Власна рамка", "A4", "16:9", "4:3", "1:1"])
 
-        btn_reset_zoom = QPushButton("🔍 Показати повністю")
+        btn_reset_zoom = QPushButton("Показати повністю")
+        btn_reset_zoom.setIcon(self.get_style_icon(QStyle.SP_FileDialogDetailedView))
         btn_reset_zoom.clicked.connect(self.reset_zoom)
 
-        btn_clear_crop = QPushButton("❌ Видалити рамку (Del)")
+        btn_clear_crop = QPushButton("Видалити рамку")
+        btn_clear_crop.setIcon(self.get_style_icon(QStyle.SP_DialogDiscardButton))
         btn_clear_crop.clicked.connect(self.reset_crop_rect_for_current)
 
         nav_layout.addWidget(self.btn_prev)
@@ -335,8 +373,10 @@ class PDFBatchCropperWidget(QWidget):
         self.progress_bar = QProgressBar()
         self.progress_bar.setValue(0)
 
-        btn_process_batch = QPushButton("⚙ Пакетна обрізка всіх файлів")
-        btn_process_batch.setStyleSheet("background-color: #0078D7; color: white; font-weight: bold; padding: 8px;")
+        btn_process_batch = QPushButton("Пакетна обрізка всіх файлів")
+        btn_process_batch.setIcon(self.get_style_icon(QStyle.SP_DialogSaveButton))
+        btn_process_batch.setMinimumHeight(35)
+        btn_process_batch.setStyleSheet("background-color: #0078D7; color: white; font-weight: bold; padding: 6px 14px;")
         btn_process_batch.clicked.connect(self.process_batch_crop)
 
         bottom_layout.addWidget(self.progress_bar)
@@ -351,11 +391,11 @@ class PDFBatchCropperWidget(QWidget):
         splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(left_panel)
         splitter.addWidget(right_panel)
-        splitter.setSizes([350, 930])
+        splitter.setSizes([320, 960])
 
         main_layout = QVBoxLayout(self)
         main_layout.addWidget(splitter)
-        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setContentsMargins(4, 4, 4, 4)
 
     def init_shortcuts(self):
         QShortcut(QKeySequence(Qt.Key_Left), self, self.prev_page)
@@ -364,18 +404,21 @@ class PDFBatchCropperWidget(QWidget):
         QShortcut(QKeySequence("Ctrl+O"), self, self.add_files)
 
     def update_list_item_text(self, index):
+        if index < 0 or index >= len(self.file_list_paths):
+            return
         file_path = self.file_list_paths[index]
         filename = os.path.basename(file_path)
-        has_crop = index in self.file_crop_rects
+        has_crop = file_path in self.file_crop_rects
 
-        status_icon = "[ ✂ ]" if has_crop else "[   ]"
+        status_icon = "[✂]" if has_crop else "[  ]"
         self.file_list_widget.item(index).setText(f"{status_icon} {filename}")
 
     def save_current_file_crop(self):
         idx = self.file_list_widget.currentRow()
-        if idx < 0 or not self.crop_item:
+        if idx < 0 or not self.crop_item or idx >= len(self.file_list_paths):
             return
 
+        file_path = self.file_list_paths[idx]
         rect = self.crop_item.rect()
         pos = self.crop_item.pos()
 
@@ -384,15 +427,19 @@ class PDFBatchCropperWidget(QWidget):
         x2 = x1 + (rect.width() / self.scale_factor)
         y2 = y1 + (rect.height() / self.scale_factor)
 
-        self.file_crop_rects[idx] = fitz.Rect(x1, y1, x2, y2)
+        self.file_crop_rects[file_path] = fitz.Rect(x1, y1, x2, y2)
         self.update_list_item_text(idx)
 
     def restore_crop_item_for_current(self):
         idx = self.file_list_widget.currentRow()
-        if idx not in self.file_crop_rects:
+        if idx < 0 or idx >= len(self.file_list_paths):
             return
 
-        saved_rect = self.file_crop_rects[idx]
+        file_path = self.file_list_paths[idx]
+        if file_path not in self.file_crop_rects:
+            return
+
+        saved_rect = self.file_crop_rects[file_path]
         x1 = saved_rect.x0 * self.scale_factor
         y1 = saved_rect.y0 * self.scale_factor
         width = (saved_rect.x1 - saved_rect.x0) * self.scale_factor
@@ -402,23 +449,74 @@ class PDFBatchCropperWidget(QWidget):
         self.scene.addItem(self.crop_item)
 
     def apply_crop_to_all_files(self):
+        """Застосовує ТІЛЬКИ рамку обрізки до всіх файлів."""
         idx = self.file_list_widget.currentRow()
-        if idx not in self.file_crop_rects:
+        if idx < 0 or idx >= len(self.file_list_paths):
+            QMessageBox.warning(self, "Увага", "Виберіть документ!")
+            return
+
+        curr_path = self.file_list_paths[idx]
+        if curr_path not in self.file_crop_rects:
             QMessageBox.warning(self, "Увага", "Спочатку намалюйте рамку для поточного документа!")
             return
 
-        current_rect = self.file_crop_rects[idx]
-        for i in range(len(self.file_list_paths)):
-            self.file_crop_rects[i] = fitz.Rect(current_rect)
+        current_rect = self.file_crop_rects[curr_path]
+        for i, path in enumerate(self.file_list_paths):
+            self.file_crop_rects[path] = fitz.Rect(current_rect)
             self.update_list_item_text(i)
 
-        QMessageBox.information(self, "Успішно", "Параметри рамки застосовано до всіх файлів у списку!")
+        QMessageBox.information(self, "Успішно", "Рамку обрізки застосовано до всех файлів у списку!")
+
+    def apply_rotation_to_all_files(self):
+        """Застосовує ТІЛЬКИ поворот до всіх файлів."""
+        idx = self.file_list_widget.currentRow()
+        if idx < 0 or idx >= len(self.file_list_paths):
+            QMessageBox.warning(self, "Увага", "Виберіть документ!")
+            return
+
+        curr_path = self.file_list_paths[idx]
+        current_rot = self.file_rotations.get(curr_path, 0)
+
+        for i, path in enumerate(self.file_list_paths):
+            self.file_rotations[path] = current_rot
+
+        QMessageBox.information(self, "Успішно", "Кут повороту застосовано до всіх файлів у списку!")
+
+    def apply_crop_and_rotation_to_all(self):
+        """Застосовує І рамку, І поворот до всіх файлів."""
+        idx = self.file_list_widget.currentRow()
+        if idx < 0 or idx >= len(self.file_list_paths):
+            QMessageBox.warning(self, "Увага", "Виберіть документ!")
+            return
+
+        curr_path = self.file_list_paths[idx]
+        if curr_path not in self.file_crop_rects:
+            QMessageBox.warning(self, "Увага", "Спочатку намалюйте рамку для поточного документа!")
+            return
+
+        current_rect = self.file_crop_rects[curr_path]
+        current_rot = self.file_rotations.get(curr_path, 0)
+
+        for i, path in enumerate(self.file_list_paths):
+            self.file_crop_rects[path] = fitz.Rect(current_rect)
+            self.file_rotations[path] = current_rot
+            self.update_list_item_text(i)
+
+        QMessageBox.information(self, "Успішно", "Рамку та поворот застосовано до всіх файлів у списку!")
 
     def rotate_page(self, angle):
-        if not self.doc:
+        idx = self.file_list_widget.currentRow()
+        if idx < 0 or idx >= len(self.file_list_paths):
             return
-        page = self.doc[self.current_page_idx]
-        page.set_rotation((page.rotation + angle) % 360)
+
+        file_path = self.file_list_paths[idx]
+        curr_rot = self.file_rotations.get(file_path, 0)
+        new_rot = (curr_rot + angle) % 360
+        self.file_rotations[file_path] = new_rot
+
+        if self.crop_item:
+            self.save_current_file_crop()
+
         self.show_page(self.current_page_idx)
 
     def apply_preset(self, index):
@@ -453,9 +551,11 @@ class PDFBatchCropperWidget(QWidget):
 
     def reset_crop_rect_for_current(self):
         idx = self.file_list_widget.currentRow()
-        if idx in self.file_crop_rects:
-            del self.file_crop_rects[idx]
-            self.update_list_item_text(idx)
+        if idx >= 0 and idx < len(self.file_list_paths):
+            file_path = self.file_list_paths[idx]
+            if file_path in self.file_crop_rects:
+                del self.file_crop_rects[file_path]
+                self.update_list_item_text(idx)
 
         if self.crop_item:
             self.scene.removeItem(self.crop_item)
@@ -479,6 +579,7 @@ class PDFBatchCropperWidget(QWidget):
     def clear_file_list(self):
         self.file_list_paths.clear()
         self.file_crop_rects.clear()
+        self.file_rotations.clear()
         self.file_list_widget.clear()
         self.scene.clear()
         self.crop_item = None
@@ -505,12 +606,17 @@ class PDFBatchCropperWidget(QWidget):
         if not self.doc:
             return
 
+        idx = self.file_list_widget.currentRow()
+        file_path = self.file_list_paths[idx] if idx >= 0 else None
+
         self.scene.clear()
-        # Повторно задаємо колір після clear(), щоб запобігти злітанню в системний темний
         self.scene.setBackgroundBrush(QBrush(QColor(230, 230, 230)))
         self.crop_item = None
 
         page = self.doc[page_num]
+
+        if file_path and file_path in self.file_rotations:
+            page.set_rotation(self.file_rotations[file_path])
 
         matrix = fitz.Matrix(self.scale_factor, self.scale_factor)
         pix = page.get_pixmap(matrix=matrix)
@@ -578,7 +684,7 @@ class PDFBatchCropperWidget(QWidget):
         skipped_count = 0
 
         for idx, file_path in enumerate(self.file_list_paths):
-            crop_rect_view = self.file_crop_rects.get(idx)
+            crop_rect_view = self.file_crop_rects.get(file_path)
 
             if not crop_rect_view:
                 skipped_count += 1
@@ -587,8 +693,12 @@ class PDFBatchCropperWidget(QWidget):
 
             try:
                 src_doc = fitz.open(file_path)
+                rotation = self.file_rotations.get(file_path, 0)
 
                 for page in src_doc:
+                    if rotation != 0:
+                        page.set_rotation(rotation)
+
                     derot = page.derotation_matrix
                     real_crop_rect = crop_rect_view * derot
                     page.set_cropbox(real_crop_rect)
