@@ -35,6 +35,15 @@ def create_vector_icon(icon_type: str, color: str = "#8C4A1B", size: int = 32) -
         p.setBrush(main_color)
         p.drawRoundedRect(7, 7, 18, 18, 4, 4)
 
+    elif icon_type == "home":
+        path = QtGui.QPainterPath()
+        path.moveTo(4, 15)
+        path.lineTo(16, 5)
+        path.lineTo(28, 15)
+        p.drawPath(path)
+        p.drawRect(8, 15, 16, 12)
+        p.drawRect(13, 20, 6, 7)
+
     elif icon_type == "compress":
         # Дві стрілки, що "стискають" вміст до центру, як символ архівації
         p.drawLine(6, 10, 6, 22)

@@ -20,7 +20,7 @@ class ModernSidebar(QtWidgets.QFrame):
         layout.setContentsMargins(12, 20, 12, 20)
         layout.setSpacing(10)
 
-        logo_label = QtWidgets.QLabel("PDF Studio")
+        logo_label = QtWidgets.QLabel("PDF Manager")
         logo_label.setObjectName("SidebarTitle")
         logo_label.setAlignment(QtCore.Qt.AlignCenter)
         layout.addWidget(logo_label)
@@ -35,22 +35,31 @@ class ModernSidebar(QtWidgets.QFrame):
         self.btn_group = QtWidgets.QButtonGroup(self)
         self.btn_group.setExclusive(True)
 
-        self.btn_ocr = self._create_nav_button("OCR та Переклад", "ocr", 0)
-        self.btn_crop = self._create_nav_button("Пакетна Обрізка", "crop", 1)
-        self.btn_compress = self._create_nav_button("Стиснення PDF", "compress", 2)
+        self.btn_home = self._create_nav_button("Головна", "home", 0)
+        self.btn_ocr = self._create_nav_button("OCR та Переклад", "ocr", 1)
+        self.btn_crop = self._create_nav_button("Пакетна Обрізка", "crop", 2)
+        self.btn_compress = self._create_nav_button("Стиснення PDF", "compress", 3)
 
+        layout.addWidget(self.btn_home)
         layout.addWidget(self.btn_ocr)
         layout.addWidget(self.btn_crop)
         layout.addWidget(self.btn_compress)
 
         layout.addStretch()
 
-        version_label = QtWidgets.QLabel("v2.0 • PyQt5")
+        version_label = QtWidgets.QLabel("reeperetter")
         version_label.setObjectName("VersionLabel")
         version_label.setAlignment(QtCore.Qt.AlignCenter)
         layout.addWidget(version_label)
 
-        self.btn_ocr.setChecked(True)
+        self.btn_home.setChecked(True)
+
+    def set_checked_index(self, index):
+        """Дозволяє зовнішньому коду (наприклад, картці на головній сторінці)
+        візуально позначити відповідну кнопку в бічній панелі як активну."""
+        btn = self.btn_group.button(index)
+        if btn:
+            btn.setChecked(True)
 
     def _create_nav_button(self, text, icon_type, index):
         btn = QtWidgets.QPushButton(text)
@@ -64,10 +73,92 @@ class ModernSidebar(QtWidgets.QFrame):
         return btn
 
 
+class ToolCard(QtWidgets.QFrame):
+    """Клікабельна картка інструменту на головній сторінці."""
+    clicked = QtCore.pyqtSignal()
+
+    def __init__(self, title, description, icon_type, parent=None):
+        super().__init__(parent)
+        self.setObjectName("ToolCard")
+        self.setCursor(QtCore.Qt.PointingHandCursor)
+        self.setMinimumHeight(180)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(10)
+
+        icon_label = QtWidgets.QLabel()
+        icon_label.setObjectName("ToolCardIcon")
+        icon_label.setPixmap(create_vector_icon(icon_type, "#8C4A1B", size=40).pixmap(40, 40))
+        layout.addWidget(icon_label)
+
+        title_label = QtWidgets.QLabel(title)
+        title_label.setObjectName("ToolCardTitle")
+        title_label.setWordWrap(True)
+        layout.addWidget(title_label)
+
+        desc_label = QtWidgets.QLabel(description)
+        desc_label.setObjectName("ToolCardDesc")
+        desc_label.setWordWrap(True)
+        layout.addWidget(desc_label)
+
+        layout.addStretch()
+
+        open_label = QtWidgets.QLabel("Відкрити →")
+        open_label.setObjectName("ToolCardOpen")
+        layout.addWidget(open_label)
+
+    def mousePressEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+
+class HomePage(QtWidgets.QWidget):
+    """Головна сторінка - вибір інструменту у вигляді карток."""
+    tool_selected = QtCore.pyqtSignal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._init_ui()
+
+    def _init_ui(self):
+        outer_layout = QtWidgets.QVBoxLayout(self)
+        outer_layout.setContentsMargins(40, 40, 40, 40)
+        outer_layout.setSpacing(20)
+
+        title = QtWidgets.QLabel("PDF Manager")
+        title.setObjectName("HomeTitle")
+        outer_layout.addWidget(title)
+
+        subtitle = QtWidgets.QLabel("Оберіть інструмент, з яким хочете працювати")
+        subtitle.setObjectName("HomeSubtitle")
+        outer_layout.addWidget(subtitle)
+
+        outer_layout.addSpacing(10)
+
+        cards_layout = QtWidgets.QHBoxLayout()
+        cards_layout.setSpacing(20)
+
+        cards_info = [
+            (1, "OCR та Переклад", "Розпізнавання тексту зі сканів та перекладених PDF, з підтримкою глосарію.", "ocr"),
+            (2, "Пакетна Обрізка", "Обрізка полів і поворот сторінок одразу для декількох PDF-файлів.", "crop"),
+            (3, "Стиснення PDF", "Зменшення розміру одного чи пакету PDF-файлів без відчутної втрати якості.", "compress"),
+        ]
+
+        for index, tool_title, tool_desc, icon_type in cards_info:
+            card = ToolCard(tool_title, tool_desc, icon_type)
+            card.clicked.connect(lambda idx=index: self.tool_selected.emit(idx))
+            cards_layout.addWidget(card)
+
+        outer_layout.addLayout(cards_layout)
+        outer_layout.addStretch()
+
+
 class MainHubWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PDF Studio & Toolbox")
+        self.setWindowTitle("PDF Manager")
         self.resize(1350, 880)
         self.setMinimumSize(1000, 650)
 
@@ -93,6 +184,10 @@ class MainHubWindow(QtWidgets.QMainWindow):
         self.cropper_widget = PDFBatchCropperWidget()
         self.compressor_widget = PDFBatchCompressorWidget()
 
+        self.home_page = HomePage()
+        self.home_page.tool_selected.connect(self.go_to_module)
+
+        self.stack.addWidget(self.home_page)
         self.stack.addWidget(self.translator_widget)
         self.stack.addWidget(self.cropper_widget)
         self.stack.addWidget(self.compressor_widget)
@@ -101,6 +196,12 @@ class MainHubWindow(QtWidgets.QMainWindow):
 
     def switch_module(self, index):
         self.stack.setCurrentIndex(index)
+
+    def go_to_module(self, index):
+        """Викликається при кліку на картку на головній сторінці:
+        перемикає вміст і синхронізує вигляд бічної панелі."""
+        self.stack.setCurrentIndex(index)
+        self.sidebar.set_checked_index(index)
 
     def _apply_styles(self):
         self.setStyleSheet("""
@@ -285,5 +386,48 @@ class MainHubWindow(QtWidgets.QMainWindow):
             }
             QProgressBar::chunk {
                 background-color: #B08259;
+            }
+
+            /* ---- Головна сторінка ---- */
+            QLabel#HomeTitle {
+                font-size: 26px;
+                font-weight: bold;
+                color: #8C4A1B;
+                background: transparent;
+            }
+            QLabel#HomeSubtitle {
+                font-size: 13px;
+                color: #5C534A;
+                background: transparent;
+            }
+
+            QFrame#ToolCard {
+                background-color: #E2DBD2;
+                border: 1px solid #BEB5A8;
+                border-radius: 12px;
+            }
+            QFrame#ToolCard:hover {
+                background-color: #EAE4DC;
+                border: 1px solid #8C4A1B;
+            }
+            QLabel#ToolCardIcon {
+                background: transparent;
+            }
+            QLabel#ToolCardTitle {
+                font-size: 15px;
+                font-weight: bold;
+                color: #403831;
+                background: transparent;
+            }
+            QLabel#ToolCardDesc {
+                font-size: 12px;
+                color: #6E6359;
+                background: transparent;
+            }
+            QLabel#ToolCardOpen {
+                font-size: 12px;
+                font-weight: bold;
+                color: #8C4A1B;
+                background: transparent;
             }
         """)
