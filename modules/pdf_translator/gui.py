@@ -12,6 +12,7 @@ import traceback
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 from ui_icons import create_vector_icon
+from theme import COLORS
 from .ocr import TESSERACT_CMD, _lazy_import_cv2
 from .pdf_pipeline import (
     IMAGE_EXTENSIONS,
@@ -269,14 +270,14 @@ class MainWindow(QtWidgets.QMainWindow):
         actions_layout.setSpacing(6)
 
         self.start_btn = QtWidgets.QPushButton("Почати обробку")
-        self.start_btn.setIcon(create_vector_icon("play", "#FFFFFF"))
+        self.start_btn.setIcon(create_vector_icon("play", COLORS["text_on_accent"]))
         self.start_btn.setIconSize(QtCore.QSize(18, 18))
         self.start_btn.setObjectName("BtnPrimary")
         self.start_btn.clicked.connect(self.start_processing)
         actions_layout.addWidget(self.start_btn)
 
         self.cancel_btn = QtWidgets.QPushButton("Скасувати")
-        self.cancel_btn.setIcon(create_vector_icon("stop", "#FFFFFF"))
+        self.cancel_btn.setIcon(create_vector_icon("stop", COLORS["text_on_accent"]))
         self.cancel_btn.setIconSize(QtCore.QSize(16, 16))
         self.cancel_btn.setObjectName("BtnDanger")
         self.cancel_btn.setEnabled(False)
@@ -284,7 +285,7 @@ class MainWindow(QtWidgets.QMainWindow):
         actions_layout.addWidget(self.cancel_btn)
 
         self.btn_open_out = QtWidgets.QPushButton("Відкрити папку результатів")
-        self.btn_open_out.setIcon(create_vector_icon("folder", "#FFFFFF"))
+        self.btn_open_out.setIcon(create_vector_icon("folder", COLORS["text_on_accent"]))
         self.btn_open_out.setIconSize(QtCore.QSize(18, 18))
         self.btn_open_out.setObjectName("BtnSecondary")
         self.btn_open_out.clicked.connect(self.open_output_folder)
@@ -306,7 +307,7 @@ class MainWindow(QtWidgets.QMainWindow):
         page_progress_row = QtWidgets.QHBoxLayout()
         root_layout.addLayout(page_progress_row)
         self.page_progress_label = QtWidgets.QLabel("")
-        self.page_progress_label.setStyleSheet("color: #666666;")
+        self.page_progress_label.setObjectName("MutedLabel")
         page_progress_row.addWidget(self.page_progress_label)
         self.page_progress = QtWidgets.QProgressBar()
         self.page_progress.setTextVisible(False)

@@ -14,13 +14,15 @@ from PyQt5.QtGui import (
     QKeySequence, QTransform, QIcon
 )
 
+from theme import accent_qcolor, COLORS
+
 
 class HandleItem(QGraphicsRectItem):
     """Маркерна точка для зміни розмірів рамки."""
     def __init__(self, position_flags, parent=None):
         super().__init__(-5, -5, 10, 10, parent)
         self.position_flags = position_flags
-        self.setPen(QPen(QColor(0, 120, 215), 1.5))
+        self.setPen(QPen(accent_qcolor(), 1.5))
         self.setBrush(QBrush(QColor(255, 255, 255)))
         self.setFlags(
             QGraphicsRectItem.ItemIsSelectable |
@@ -56,9 +58,9 @@ class CropRectItem(QGraphicsRectItem):
             QGraphicsRectItem.ItemIsMovable |
             QGraphicsRectItem.ItemSendsGeometryChanges
         )
-        pen = QPen(QColor(0, 120, 215), 2, Qt.DashLine)
+        pen = QPen(accent_qcolor(), 2, Qt.DashLine)
         self.setPen(pen)
-        brush = QBrush(QColor(0, 120, 215, 30))
+        brush = QBrush(accent_qcolor(30))
         self.setBrush(brush)
 
         self.handles = {}
@@ -123,8 +125,8 @@ class PDFCropView(QGraphicsView):
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
 
-        self.setStyleSheet("QGraphicsView { background-color: #d0d0d0; border: 1px solid #cccccc; }")
-        self.setBackgroundBrush(QBrush(QColor(208, 208, 208)))
+        self.setObjectName("PagePreview")
+        self.setBackgroundBrush(QBrush(QColor(COLORS["preview_bg"])))
 
     def _get_cropper_widget(self):
         parent = self.parent()
@@ -261,13 +263,6 @@ class PDFBatchCropperWidget(QWidget):
         return self.style().standardIcon(standard_pixmap)
 
     def init_ui(self):
-        # Очищуємо CSS-падінги для кнопок
-        self.setStyleSheet("""
-            QPushButton {
-                padding: 4px 6px;
-            }
-        """)
-
         left_panel = QWidget()
         left_layout = QVBoxLayout()
         left_layout.setSpacing(6)
@@ -376,7 +371,7 @@ class PDFBatchCropperWidget(QWidget):
         btn_process_batch = QPushButton("Пакетна обрізка всіх файлів")
         btn_process_batch.setIcon(self.get_style_icon(QStyle.SP_DialogSaveButton))
         btn_process_batch.setMinimumHeight(35)
-        btn_process_batch.setStyleSheet("background-color: #0078D7; color: white; font-weight: bold; padding: 6px 14px;")
+        btn_process_batch.setObjectName("BtnPrimary")
         btn_process_batch.clicked.connect(self.process_batch_crop)
 
         bottom_layout.addWidget(self.progress_bar)
@@ -610,7 +605,7 @@ class PDFBatchCropperWidget(QWidget):
         file_path = self.file_list_paths[idx] if idx >= 0 else None
 
         self.scene.clear()
-        self.scene.setBackgroundBrush(QBrush(QColor(230, 230, 230)))
+        self.scene.setBackgroundBrush(QBrush(QColor(COLORS["preview_bg"])))
         self.crop_item = None
 
         page = self.doc[page_num]
@@ -729,7 +724,9 @@ class PDFBatchCropperWidget(QWidget):
 
 
 if __name__ == "__main__":
+    from theme import apply_theme
     app = QApplication(sys.argv)
+    apply_theme(app)
     window = PDFBatchCropperWidget()
     window.resize(1280, 800)
     window.show()

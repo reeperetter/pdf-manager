@@ -1,7 +1,14 @@
 from PyQt5 import QtCore, QtGui
+from theme import COLORS
 
-def create_vector_icon(icon_type: str, color: str = "#8C4A1B", size: int = 32) -> QtGui.QIcon:
-    """Генерує векторні іконки через QPainter для стабільного відображення на всіх ОС."""
+def create_vector_icon(icon_type: str, color: str = None, size: int = 32) -> QtGui.QIcon:
+    """Генерує векторні іконки через QPainter для стабільного відображення на всіх ОС.
+
+    Якщо color не задано - використовується фірмовий акцентний колір
+    із theme.py (єдине джерело кольорів застосунку)."""
+    if color is None:
+        color = COLORS["accent"]
+
     pix = QtGui.QPixmap(size, size)
     pix.fill(QtCore.Qt.transparent)
     p = QtGui.QPainter(pix)

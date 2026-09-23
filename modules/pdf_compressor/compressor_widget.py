@@ -14,6 +14,7 @@ from PyQt5.QtGui import QPixmap, QImage
 from modules.pdf_compressor.compressor_core import (
     COMPRESSION_PRESETS, DEFAULT_PRESET_KEY, compress_pdf_file, format_size
 )
+from theme import apply_theme
 
 
 class CompressorDropListWidget(QListWidget):
@@ -70,10 +71,6 @@ class PDFBatchCompressorWidget(QWidget):
         return self.style().standardIcon(standard_pixmap)
 
     def init_ui(self):
-        self.setStyleSheet("""
-            QPushButton { padding: 4px 6px; }
-        """)
-
         left_panel = QWidget()
         left_layout = QVBoxLayout()
         left_layout.setSpacing(6)
@@ -135,7 +132,7 @@ class PDFBatchCompressorWidget(QWidget):
 
         settings_layout.addWidget(QLabel("Що не стискається:"))
         info_label = QLabel("Текст, шрифти й вектори — без втрат.\nСтискаються лише растрові зображення.")
-        info_label.setStyleSheet("color: #6E6359; font-size: 11px;")
+        info_label.setObjectName("MutedLabel")
         info_label.setWordWrap(True)
         settings_layout.addWidget(info_label)
 
@@ -160,9 +157,7 @@ class PDFBatchCompressorWidget(QWidget):
         self.preview_label = QLabel("Виберіть файл зі списку\nдля попереднього перегляду")
         self.preview_label.setAlignment(Qt.AlignCenter)
         self.preview_label.setMinimumHeight(320)
-        self.preview_label.setStyleSheet(
-            "background-color: #d0d0d0; border: 1px solid #cccccc; color: #5C534A;"
-        )
+        self.preview_label.setObjectName("PagePreview")
 
         self.info_label = QLabel("")
         self.info_label.setAlignment(Qt.AlignCenter)
@@ -356,6 +351,7 @@ class PDFBatchCompressorWidget(QWidget):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    apply_theme(app)
     window = PDFBatchCompressorWidget()
     window.resize(1280, 800)
     window.show()
