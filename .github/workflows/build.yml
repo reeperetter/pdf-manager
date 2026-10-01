@@ -1,0 +1,148 @@
+name: Build EXE / Linux binary
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: 'Які платформи збирати'
+        required: true
+        default: 'both'
+        type: choice
+        options:
+          - both
+          - windows-only
+          - linux-only
+
+# Потрібно для softprops/action-gh-release - без цього GITHUB_TOKEN
+# не матиме прав на створення релізу й завантаження файлів до нього.
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows
+          - os: ubuntu-22.04
+            name: linux
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Determine if this platform should build
+        id: check
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ] || \
+             [ "${{ inputs.platforms }}" == "both" ] || \
+             { [ "${{ inputs.platforms }}" == "windows-only" ] && [ "${{ matrix.os }}" == "windows-latest" ]; } || \
+             { [ "${{ inputs.platforms }}" == "linux-only" ] && [ "${{ matrix.os }}" == "ubuntu-22.04" ]; }; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout code
+        if: steps.check.outputs.run == 'true'
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        if: steps.check.outputs.run == 'true'
+        uses: actions/setup-python@v5
+        with:
+          # Фіксуємо версію напряму (а не через .python-version), бо той
+          # файл містить діапазон ">=3.12", який setup-python не розбирає.
+          python-version: '3.12'
+
+      - name: Install uv
+        if: steps.check.outputs.run == 'true'
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Configure uv to use system Python
+        if: steps.check.outputs.run == 'true'
+        shell: bash
+        run: echo "UV_PYTHON_PREFERENCE=only-system" >> "$GITHUB_ENV"
+
+      # PyQt5 на Linux динамічно підвантажує системні бібліотеки X11/OpenGL
+      # навіть просто при імпорті (ще до створення вікна) - без них впаде
+      # і сам PyInstaller під час аналізу залежностей, і зібраний бінарник
+      # під час smoke-тесту нижче.
+      - name: Install Qt runtime libraries (Linux only)
+        if: steps.check.outputs.run == 'true' && matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgl1 libegl1 libxkbcommon-x11-0 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0
+
+      - name: Install dependencies
+        if: steps.check.outputs.run == 'true'
+        run: uv sync
+
+      # ---- Збірка для Windows (.exe) ----
+      # DejaVuSans.ttf кладемо саме в modules/pdf_translator, бо саме там
+      # його шукає pdf_pipeline.py (BUNDLED_FONT поруч із __file__ модуля) -
+      # PyInstaller у режимі --onefile відтворює структуру пакетів модулів
+      # усередині тимчасової теки розпакування, тож шлях співпадає.
+      - name: Build EXE (Windows)
+        if: steps.check.outputs.run == 'true' && matrix.os == 'windows-latest'
+        run: |
+          uv run --with pyinstaller pyinstaller --onefile --windowed --name PDFManager `
+            --add-data "DejaVuSans.ttf;modules/pdf_translator" `
+            main.py
+
+      # ---- Збірка для Linux (звичайний бінарник) ----
+      - name: Build binary (Linux)
+        if: steps.check.outputs.run == 'true' && matrix.os == 'ubuntu-22.04'
+        run: |
+          uv run --with pyinstaller pyinstaller --onefile --windowed --name PDFManager \
+            --add-data "DejaVuSans.ttf:modules/pdf_translator" \
+            main.py
+
+      # Швидка перевірка, що зібраний бінарник взагалі запускається і не
+      # падає одразу (найчастіша проблема "заморожених" Qt-застосунків -
+      # відсутня системна бібліотека). QT_QPA_PLATFORM=offscreen дозволяє
+      # запустити GUI-застосунок без реального дисплея.
+      - name: Smoke test built binary (Linux only)
+        if: steps.check.outputs.run == 'true' && matrix.os == 'ubuntu-22.04'
+        shell: bash
+        run: |
+          QT_QPA_PLATFORM=offscreen ./dist/PDFManager &
+          APP_PID=$!
+          sleep 5
+          if kill -0 "$APP_PID" 2>/dev/null; then
+            echo "OK: застосунок успішно запустився і працює."
+            kill "$APP_PID"
+          else
+            echo "ПОМИЛКА: застосунок завершився одразу після запуску."
+            exit 1
+          fi
+
+      - name: Upload artifact
+        if: steps.check.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: PDFManager-${{ matrix.name }}
+          path: |
+            dist/PDFManager.exe
+            dist/PDFManager
+          if-no-files-found: ignore
+
+      - name: Create GitHub Release
+        if: steps.check.outputs.run == 'true' && startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/PDFManager.exe
+            dist/PDFManager
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
