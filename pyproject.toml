@@ -24,3 +24,18 @@ dependencies = [
 # легкою для слабких ПК; опція просто буде показувати повідомлення про
 # відсутній пакет, якщо її увімкнути без встановленого dewarp-екстра.
 dewarp = ["opencv-python-headless>=4.9", "numpy>=1.26"]
+
+[tool.uv]
+# PyQt5-Qt5 перестав публікувати Windows-колеса після версії 5.15.2
+# (усі новіші 5.15.x мають лише macOS/Linux-wheels) - без цього блоку uv
+# бере найновішу версію під час резолюції і збірка падає на Windows з
+# "doesn't have a source distribution or wheel for the current platform".
+# Явно вказуємо, під які платформи має резолвитись проєкт (відповідає
+# матриці .github/workflows/build.yml: windows-latest + ubuntu-22.04) -
+# тоді uv сам підбере версії, сумісні з усіма ними одразу (для
+# pyqt5-qt5 це означає відкат до 5.15.2 - останньої версії з
+# Windows-колесами).
+required-environments = [
+    "sys_platform == 'win32' and platform_machine == 'AMD64'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
