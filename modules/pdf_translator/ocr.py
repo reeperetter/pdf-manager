@@ -5,6 +5,7 @@
 координатами", живе тут. PDF-специфічні речі (вставка тексту в PDF,
 переклад, збереження файлів) - у pdf_pipeline.py.
 """
+import contextlib
 import os
 import shutil
 import time
@@ -13,6 +14,58 @@ import pytesseract
 from PIL import Image, ImageOps
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+@contextlib.contextmanager
+def _external_tesseract_env():
+    """
+    Захист від класичної проблеми PyInstaller на Linux/macOS: бандлер
+    підміняє LD_LIBRARY_PATH (macOS: DYLD_LIBRARY_PATH) на шлях до
+    власних забандлених .so-бібліотек, щоб рідні розширення програми
+    (cv2, PyQt5 тощо) коректно завантажувались. Але БУДЬ-ЯКИЙ зовнішній
+    процес, який ми запускаємо як subprocess (системний tesseract),
+    успадковує це ж середовище - і якщо версії системних бібліотек
+    tesseract (libpng/libjpeg/liblept тощо) відрізняються від
+    забандлених нами, зовнішній бінарник падає з "exit status 1" при
+    найпершому ж запуску ("tesseract --version").
+
+    PyInstaller зберігає оригінальне (дофреймворкове) значення під
+    тим самим ім'ям зі суфіксом "_ORIG" - тимчасово повертаємо його на
+    час виклику pytesseract, а одразу після виклику відновлюємо назад
+    (щоб не зламати подальше лінивe довантаження власних забандлених
+    бібліотек, напр. cv2 для випрямлення сторінки).
+
+    Поза frozen-збіркою (звичайний запуск через `uv run main.py`) ці
+    змінні відсутні, і цей менеджер контексту нічого не робить.
+
+    ВАЖЛИВО: перевіряємо наявність самого LD_LIBRARY_PATH, а НЕ
+    LD_LIBRARY_PATH_ORIG! За документацією PyInstaller, "_ORIG"
+    з'являється, лише якщо LD_LIBRARY_PATH вже існував У КОРИСТУВАЧА
+    до запуску програми. У типового користувача, який ніколи вручну не
+    виставляв цю змінну (переважна більшість), "_ORIG" не з'явиться
+    взагалі - і якщо перевіряти саме її, фікс не спрацює в
+    найпоширенішому випадку. Коли "_ORIG" немає, правильна "оригінальна"
+    поведінка - просто прибрати LD_LIBRARY_PATH повністю (бо PyInstaller
+    сам створив її з нуля)."""
+    keys = ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH")
+    saved = {}
+    for key in keys:
+        if key not in os.environ:
+            continue
+        saved[key] = os.environ.get(key)
+        orig_value = os.environ.get(key + "_ORIG")
+        if orig_value:
+            os.environ[key] = orig_value
+        else:
+            os.environ.pop(key, None)
+    try:
+        yield
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def find_tesseract_cmd():
@@ -78,9 +131,10 @@ def _brute_force_orientation(pil_img, log_fn=None):
         time.sleep(0.001)
         candidate = prep_img.rotate(-angle, expand=True) if angle else prep_img
         try:
-            osd = pytesseract.image_to_osd(
-                candidate, config="--psm 0", output_type=pytesseract.Output.DICT
-            )
+            with _external_tesseract_env():
+                osd = pytesseract.image_to_osd(
+                    candidate, config="--psm 0", output_type=pytesseract.Output.DICT
+                )
         except Exception:
             continue
 
@@ -107,9 +161,10 @@ def detect_and_fix_orientation(pil_img, log_fn=None):
     prep_img = preprocess_for_ocr(pil_img)
 
     try:
-        osd = pytesseract.image_to_osd(
-            prep_img, config="--psm 0", output_type=pytesseract.Output.DICT
-        )
+        with _external_tesseract_env():
+            osd = pytesseract.image_to_osd(
+                prep_img, config="--psm 0", output_type=pytesseract.Output.DICT
+            )
         angle = int(osd.get("rotate", 0) or 0)
         conf = float(osd.get("orientation_conf", 0) or 0)
     except Exception:
@@ -152,8 +207,9 @@ _CYRILLIC_LANGS = "ukr+rus"
 
 def _run_tesseract_pass(proc_img, lang, config):
     try:
-        return pytesseract.image_to_data(
-            proc_img, lang=lang, config=config, output_type=pytesseract.Output.DICT)
+        with _external_tesseract_env():
+            return pytesseract.image_to_data(
+                proc_img, lang=lang, config=config, output_type=pytesseract.Output.DICT)
     except pytesseract.TesseractNotFoundError as e:
         raise RuntimeError(f"Tesseract не запустився: {e}")
     except pytesseract.TesseractError as e:
