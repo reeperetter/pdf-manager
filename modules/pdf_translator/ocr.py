@@ -54,6 +54,16 @@ if TESSERACT_CMD:
     pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
 
 
+def set_tesseract_cmd(path):
+    """Оновлює шлях до tesseract у цьому модулі й у pytesseract одразу,
+    без перезапуску програми - викликається після успішного
+    автовстановлення (див. tesseract_installer.py)."""
+    global TESSERACT_CMD
+    TESSERACT_CMD = path
+    if path:
+        pytesseract.pytesseract.tesseract_cmd = path
+
+
 def _brute_force_orientation(pil_img, log_fn=None):
     """
     Перебір 4 кутів повороту для OSD.
@@ -268,11 +278,7 @@ def _group_words_into_lines(words):
 def ocr_lines_from_image(pil_img, min_confidence=0, source_lang="auto"):
     """Запускає Tesseract на зображенні сторінки та повертає рядки та впевненість."""
     if not TESSERACT_CMD:
-        raise RuntimeError(
-            "Не знайдено виконуваний файл Tesseract OCR. Встановіть його:\n"
-            "  Linux: sudo apt install tesseract-ocr tesseract-ocr-ukr tesseract-ocr-rus\n"
-            "  Windows: https://github.com/UB-Mannheim/tesseract/wiki"
-        )
+        raise RuntimeError("Не знайдено виконуваний файл Tesseract OCR.")
     proc_img = preprocess_for_ocr(pil_img)
     scale_back_x = pil_img.width / proc_img.width
     scale_back_y = pil_img.height / proc_img.height
@@ -319,18 +325,16 @@ _NP_MODULE = None
 
 
 def _lazy_import_cv2():
-    """Лінивий імпорт opencv-python-headless + numpy."""
+    """Лінивий імпорт opencv-python-headless + numpy.
+
+    Це основні залежності проєкту (завжди встановлені й завжди включені
+    в готову збірку) - лінивий імпорт лишився лише тому, що завантаження
+    cv2 займає помітний час, і немає сенсу платити цим часом при старті
+    програми, якщо людина жодного разу не вмикала "Випрямлення сторінки"."""
     global _CV2_MODULE, _NP_MODULE
     if _CV2_MODULE is None:
-        try:
-            import cv2 as _cv2
-            import numpy as _np
-        except ImportError:
-            raise RuntimeError(
-                "Для розпрямлення сторінок потрібен пакет opencv-python-headless.\n"
-                "Встановіть: pip install opencv-python-headless numpy\n"
-                "(або, якщо проєкт запущено через uv: uv sync --extra dewarp)"
-            )
+        import cv2 as _cv2
+        import numpy as _np
         _CV2_MODULE, _NP_MODULE = _cv2, _np
     return _CV2_MODULE, _NP_MODULE
 

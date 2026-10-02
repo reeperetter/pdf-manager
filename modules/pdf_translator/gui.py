@@ -13,7 +13,8 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 
 from ui_icons import create_vector_icon
 from theme import COLORS
-from .ocr import TESSERACT_CMD, _lazy_import_cv2
+from .ocr import _lazy_import_cv2
+from .tesseract_installer import ensure_tesseract_available
 from .pdf_pipeline import (
     IMAGE_EXTENSIONS,
     ProcessingCancelled,
@@ -632,16 +633,15 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "Нічого робити", "Виберіть дію у розділі «Що створити».")
             return
 
-        if not TESSERACT_CMD:
-            QtWidgets.QMessageBox.critical(self, "Tesseract не знайдено", "Не знайдено Tesseract OCR.")
+        if not ensure_tesseract_available(self):
             return
 
         if self.chk_dewarp.isChecked():
             try:
                 _lazy_import_cv2()
-            except RuntimeError as e:
+            except Exception:
                 choice = QtWidgets.QMessageBox.warning(
-                    self, "Немає OpenCV", str(e) + "\n\nПродовжити বিনা розпрямлення?",
+                    self, "Випрямлення недоступне", "Не вдалося увімкнути випрямлення сторінки.\n\nПродовжити без нього?",
                     QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel,
                 )
                 if choice != QtWidgets.QMessageBox.Yes:

@@ -527,6 +527,8 @@ dependencies = [
     { name = "googletrans" },
     { name = "js2py" },
     { name = "langdetect" },
+    { name = "numpy" },
+    { name = "opencv-python-headless" },
     { name = "pillow" },
     { name = "pymupdf" },
     { name = "pyqt5" },
@@ -536,20 +538,14 @@ dependencies = [
     { name = "urllib3" },
 ]
 
-[package.optional-dependencies]
-dewarp = [
-    { name = "numpy" },
-    { name = "opencv-python-headless" },
-]
-
 [package.metadata]
 requires-dist = [
     { name = "deep-translator", specifier = ">=1.11.4" },
     { name = "googletrans", specifier = "==4.0.0rc1" },
     { name = "js2py", specifier = ">=0.74" },
     { name = "langdetect", specifier = ">=1.0.9" },
-    { name = "numpy", marker = "extra == 'dewarp'", specifier = ">=1.26" },
-    { name = "opencv-python-headless", marker = "extra == 'dewarp'", specifier = ">=4.9" },
+    { name = "numpy", specifier = ">=1.26" },
+    { name = "opencv-python-headless", specifier = ">=4.9" },
     { name = "pillow", specifier = ">=12.3.0" },
     { name = "pymupdf", specifier = ">=1.28.0" },
     { name = "pyqt5", specifier = ">=5.15.11" },
@@ -558,7 +554,6 @@ requires-dist = [
     { name = "requests", specifier = ">=2.34.2" },
     { name = "urllib3", specifier = ">=2.7.0" },
 ]
-provides-extras = ["dewarp"]
 
 [[package]]
 name = "pillow"
