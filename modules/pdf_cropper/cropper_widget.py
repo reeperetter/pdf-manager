@@ -677,6 +677,14 @@ class PDFBatchCropperWidget(QWidget):
 
         processed_count = 0
         skipped_count = 0
+        # Імена вихідних файлів беруться лише з basename(file_path). Якщо
+        # серед вхідних файлів є кілька з ОДНАКОВОЮ назвою, але з різних
+        # папок (типово для сканів/фото), усі вони писались би в один і
+        # той самий шлях output_dir/<prefix><filename> - кожен наступний
+        # мовчки перезаписував би попередній на диску. Збираємо вже
+        # використані шляхи та додаємо лічильник "_1", "_2", ... при
+        # колізії, щоб жоден оброблений файл не губився.
+        used_out_paths = set()
 
         for idx, file_path in enumerate(self.file_list_paths):
             crop_rect_view = self.file_crop_rects.get(file_path)
@@ -699,7 +707,14 @@ class PDFBatchCropperWidget(QWidget):
                     page.set_cropbox(real_crop_rect)
 
                 filename = os.path.basename(file_path)
-                out_path = os.path.join(output_dir, f"{prefix}{filename}")
+                stem, ext = os.path.splitext(filename)
+                out_path = os.path.join(output_dir, f"{prefix}{stem}{ext}")
+
+                dup_counter = 1
+                while out_path in used_out_paths or os.path.exists(out_path):
+                    out_path = os.path.join(output_dir, f"{prefix}{stem}_{dup_counter}{ext}")
+                    dup_counter += 1
+                used_out_paths.add(out_path)
 
                 src_doc.save(out_path, garbage=4, deflate=True)
                 src_doc.close()
