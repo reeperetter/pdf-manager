@@ -251,28 +251,38 @@ def translate_batch_microsoft(lines_list, target_lang="uk", source_lang="auto", 
             if log_fn:
                 log_fn(f"  [!] DeepL помилка: {e}. Перехід на MyMemory...")
 
-    # 2. Якщо source_lang == 'auto', визначаємо мову локально
+    # 2. Якщо source_lang == 'auto' або це комбінація кількох мов Tesseract
+    #    (наприклад "ukr+eng"), однозначного коду немає - визначаємо мову
+    #    локально за текстом.
     actual_source = source_lang
-    if actual_source == "auto":
+    if actual_source == "auto" or (actual_source and "+" in actual_source):
         sample_text = " ".join([l.strip() for l in lines_list if l.strip()][:5])
         actual_source = detect_text_language(sample_text)
         if log_fn:
             log_fn(f"  [i] Автовизначення мови джерела: '{actual_source}'")
 
-    # Мапінг кодів ISO під вимоги MyMemory (потрібні повні локалі)
+    # Мапінг кодів під вимоги MyMemory (потрібні повні локалі, напр. "uk-UA").
+    # Комбобокс вибору мови в gui.py віддає 3-літерні коди Tesseract
+    # ("eng", "ukr", ...), а detect_text_language/langdetect - короткі
+    # ISO-коди ("en", "uk", ...). Мапа повинна покривати ОБИДВА формати,
+    # інакше MyMemory відповідає "No support for the provided language"
+    # і переклад мовчки пропускається (файл зберігається неперекладеним).
     lang_map = {
-        "uk": "uk-UA",
-        "en": "en-US",
-        "de": "de-DE",
-        "fr": "fr-FR",
-        "es": "es-ES",
-        "it": "it-IT",
-        "pl": "pl-PL",
-        "ru": "ru-RU"
+        "uk": "uk-UA", "ukr": "uk-UA",
+        "en": "en-US", "eng": "en-US",
+        "de": "de-DE", "deu": "de-DE", "ger": "de-DE",
+        "fr": "fr-FR", "fra": "fr-FR", "fre": "fr-FR",
+        "es": "es-ES", "spa": "es-ES",
+        "it": "it-IT", "ita": "it-IT",
+        "pl": "pl-PL", "pol": "pl-PL",
+        "ru": "ru-RU", "rus": "ru-RU",
     }
 
     tgt = lang_map.get(target_lang, target_lang)
     src = lang_map.get(actual_source, actual_source)
+
+    if log_fn:
+        log_fn(f"  [i] MyMemory: source='{src}' target='{tgt}'")
 
     try:
         translator = MyMemoryTranslator(source=src, target=tgt)
