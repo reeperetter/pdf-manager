@@ -89,34 +89,44 @@ jobs:
         run: uv sync
 
       # ---- Збірка для Windows (.exe) ----
-      # DejaVuSans.ttf кладемо саме в modules/pdf_translator, бо саме там
-      # його шукає pdf_pipeline.py (BUNDLED_FONT поруч із __file__ модуля) -
-      # PyInstaller у режимі --onefile відтворює структуру пакетів модулів
-      # усередині тимчасової теки розпакування, тож шлях співпадає.
+      # Режим --onedir (а НЕ --onefile): застосунок не повинен бути одним
+      # монолітним файлом. Побічний плюс --onedir: усі бібліотеки (PyQt5,
+      # OpenCV, PyMuPDF, Pillow тощо) лежать окремими файлами в
+      # dist/PDFManager/_internal/ - це дозволяє реально зазирнути туди й
+      # побачити, чи не затягнулись конфліктні версії спільних системних
+      # бібліотек (libjpeg/zlib/libpng), на відміну від --onefile, де все
+      # розпаковується в тимчасову теку й одразу видаляється після виходу.
+      #
+      # DejaVuSans.ttf і modules/pdf_translator/installers кладемо саме в
+      # modules/pdf_translator, бо саме там їх шукає код (BUNDLED_FONT і
+      # tesseract_installer.py - шляхи відносно __file__ свого модуля).
       - name: Build EXE (Windows)
         if: steps.check.outputs.run == 'true' && matrix.os == 'windows-latest'
         run: |
-          uv run --with pyinstaller pyinstaller --onefile --windowed --name PDFManager `
+          uv run --with pyinstaller pyinstaller --onedir --windowed --name PDFManager `
             --add-data "DejaVuSans.ttf;modules/pdf_translator" `
+            --add-data "modules/pdf_translator/installers;modules/pdf_translator/installers" `
             main.py
 
-      # ---- Збірка для Linux (звичайний бінарник) ----
+      # ---- Збірка для Linux (тека з бінарником, не --onefile) ----
       - name: Build binary (Linux)
         if: steps.check.outputs.run == 'true' && matrix.os == 'ubuntu-22.04'
         run: |
-          uv run --with pyinstaller pyinstaller --onefile --windowed --name PDFManager \
+          uv run --with pyinstaller pyinstaller --onedir --windowed --name PDFManager \
             --add-data "DejaVuSans.ttf:modules/pdf_translator" \
+            --add-data "modules/pdf_translator/installers:modules/pdf_translator/installers" \
             main.py
 
       # Швидка перевірка, що зібраний бінарник взагалі запускається і не
       # падає одразу (найчастіша проблема "заморожених" Qt-застосунків -
       # відсутня системна бібліотека). QT_QPA_PLATFORM=offscreen дозволяє
-      # запустити GUI-застосунок без реального дисплея.
+      # запустити GUI-застосунок без реального дисплея. У --onedir режимі
+      # виконуваний файл лежить усередині власної теки dist/PDFManager/.
       - name: Smoke test built binary (Linux only)
         if: steps.check.outputs.run == 'true' && matrix.os == 'ubuntu-22.04'
         shell: bash
         run: |
-          QT_QPA_PLATFORM=offscreen ./dist/PDFManager &
+          QT_QPA_PLATFORM=offscreen ./dist/PDFManager/PDFManager &
           APP_PID=$!
           sleep 5
           if kill -0 "$APP_PID" 2>/dev/null; then
@@ -127,14 +137,26 @@ jobs:
             exit 1
           fi
 
+      # GitHub Releases/Artifacts вміють прикріпляти лише файли, не теки,
+      # тож усю теку --onedir пакуємо в один zip.
+      - name: Package build (Windows)
+        if: steps.check.outputs.run == 'true' && matrix.os == 'windows-latest'
+        run: Compress-Archive -Path dist/PDFManager -DestinationPath PDFManager-windows.zip
+
+      - name: Package build (Linux)
+        if: steps.check.outputs.run == 'true' && matrix.os == 'ubuntu-22.04'
+        run: |
+          cd dist
+          zip -r ../PDFManager-linux.zip PDFManager
+
       - name: Upload artifact
         if: steps.check.outputs.run == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: PDFManager-${{ matrix.name }}
           path: |
-            dist/PDFManager.exe
-            dist/PDFManager
+            PDFManager-windows.zip
+            PDFManager-linux.zip
           if-no-files-found: ignore
 
       - name: Create GitHub Release
@@ -142,7 +164,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/PDFManager.exe
-            dist/PDFManager
+            PDFManager-windows.zip
+            PDFManager-linux.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

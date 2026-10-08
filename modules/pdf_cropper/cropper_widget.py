@@ -368,7 +368,8 @@ class PDFBatchCropperWidget(QWidget):
         self.progress_bar = QProgressBar()
         self.progress_bar.setValue(0)
 
-        btn_process_batch = QPushButton("Пакетна обрізка всіх файлів")
+        self.btn_process_batch = QPushButton("Пакетна обрізка всіх файлів")
+        btn_process_batch = self.btn_process_batch
         btn_process_batch.setIcon(self.get_style_icon(QStyle.SP_DialogSaveButton))
         btn_process_batch.setMinimumHeight(35)
         btn_process_batch.setObjectName("BtnPrimary")
@@ -651,6 +652,18 @@ class PDFBatchCropperWidget(QWidget):
             self.show_page(self.current_page_idx)
 
     def process_batch_crop(self):
+        # Кнопку вимикаємо на час усієї обробки (разом із модальними
+        # діалогами вибору папки/попередження вище) - без цього подвійний
+        # клік під час відкритого діалогу міг повторно викликати цей метод
+        # ще раз поверх першого виклику (process_batch_crop не захищений
+        # від повторного входу), що давало непередбачувану поведінку.
+        self.btn_process_batch.setEnabled(False)
+        try:
+            self._process_batch_crop_impl()
+        finally:
+            self.btn_process_batch.setEnabled(True)
+
+    def _process_batch_crop_impl(self):
         if not self.file_list_paths:
             QMessageBox.warning(self, "Помилка", "Список файлів порожній!")
             return
@@ -661,6 +674,56 @@ class PDFBatchCropperWidget(QWidget):
         if not self.file_crop_rects:
             QMessageBox.warning(self, "Помилка", "Ви не задали рамку обрізки жодному файлу!")
             return
+
+        # Раніше тут була лише перевірка "словник НЕ ПОРОЖНІЙ" - вона
+        # проходила, навіть якщо рамку намальовано лише на ОДНОМУ файлі
+        # (а після додавання файлів автоматично вибирається перший). Решта
+        # файлів без рамки потім мовчки пропускались у циклі нижче, і єдина
+        # згадка про це - рядок "Пропущено: N" у фінальному вікні з
+        # заголовком "Успішно!", який легко не помітити. Звідси й
+        # враження "обробляється тільки перший файл, без жодної
+        # закономірності" - насправді все залежало від того, чи встигли
+        # задати рамку кожному файлу, просто про це ніхто не попереджав.
+        missing_paths = [p for p in self.file_list_paths if p not in self.file_crop_rects]
+
+        if missing_paths:
+            idx = self.file_list_widget.currentRow()
+            curr_path = self.file_list_paths[idx] if idx >= 0 else None
+            source_rect = self.file_crop_rects.get(curr_path) if curr_path else None
+            if source_rect is None:
+                for p in self.file_list_paths:
+                    if p in self.file_crop_rects:
+                        source_rect = self.file_crop_rects[p]
+                        break
+
+            shown = [os.path.basename(p) for p in missing_paths[:10]]
+            names_text = "\n".join(f"  • {n}" for n in shown)
+            if len(missing_paths) > 10:
+                names_text += f"\n  … і ще {len(missing_paths) - 10}"
+
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Warning)
+            box.setWindowTitle("Не всім файлам задано рамку")
+            box.setText(
+                f"{len(missing_paths)} з {len(self.file_list_paths)} файлів ще не мають "
+                f"рамки обрізки:\n\n{names_text}\n\n"
+                "Застосувати до них ту саму рамку, що й у поточного файлу, "
+                "чи пропустити ці файли при обробці?"
+            )
+            btn_apply = box.addButton("Застосувати рамку до них", QMessageBox.AcceptRole)
+            btn_skip = box.addButton("Пропустити ці файли", QMessageBox.DestructiveRole)
+            btn_cancel = box.addButton("Скасувати", QMessageBox.RejectRole)
+            btn_apply.setEnabled(source_rect is not None)
+            box.setDefaultButton(btn_apply if source_rect is not None else btn_skip)
+            box.exec_()
+
+            clicked = box.clickedButton()
+            if clicked is btn_cancel:
+                return
+            if clicked is btn_apply and source_rect is not None:
+                for p in missing_paths:
+                    self.file_crop_rects[p] = fitz.Rect(source_rect)
+                    self.update_list_item_text(self.file_list_paths.index(p))
 
         output_dir = QFileDialog.getExistingDirectory(self, "Виберіть папку для збереження")
         if not output_dir:
@@ -686,6 +749,14 @@ class PDFBatchCropperWidget(QWidget):
         # колізії, щоб жоден оброблений файл не губився.
         used_out_paths = set()
 
+        # Файли, що впали з помилкою (на відміну від skipped_count - тих,
+        # кому просто не задали рамку). Раніше помилка тут лише друкувалась
+        # у консоль ("print") і користувач про неї ніколи не дізнавався -
+        # особливо в зібраному --windowed застосунку, де консолі немає
+        # взагалі. Звідси й відчуття "обробляється лише частина файлів без
+        # жодної закономірності", хоча рамку було задано всім.
+        failed_files = []
+
         for idx, file_path in enumerate(self.file_list_paths):
             crop_rect_view = self.file_crop_rects.get(file_path)
 
@@ -704,6 +775,22 @@ class PDFBatchCropperWidget(QWidget):
 
                     derot = page.derotation_matrix
                     real_crop_rect = crop_rect_view * derot
+
+                    # Та сама (числова) рамка, намальована чи застосована
+                    # по ОДНОМУ файлу, у іншого файлу може трохи виходити
+                    # за межі його фактичної сторінки (інший розмір скану,
+                    # інша орієнтація тощо) - PyMuPDF у такому разі кидає
+                    # ValueError "CropBox not in MediaBox" і файл просто
+                    # не зберігався. Обрізаємо рамку до меж сторінки, щоб
+                    # такий файл усе одно оброблявся; якщо після цього
+                    # рамка не лишає жодної площі - це вже справжня
+                    # помилка, і про неї повідомляємо користувачу.
+                    real_crop_rect &= page.rect
+                    if real_crop_rect.is_empty or real_crop_rect.is_infinite:
+                        raise ValueError(
+                            "рамка обрізки повністю поза межами сторінки цього файлу"
+                        )
+
                     page.set_cropbox(real_crop_rect)
 
                 filename = os.path.basename(file_path)
@@ -722,6 +809,7 @@ class PDFBatchCropperWidget(QWidget):
                 processed_count += 1
             except Exception as e:
                 print(f"Помилка обробки {file_path}: {e}")
+                failed_files.append((os.path.basename(file_path), str(e)))
 
             self.progress_bar.setValue(idx + 1)
             QApplication.processEvents()
@@ -732,10 +820,25 @@ class PDFBatchCropperWidget(QWidget):
 
         msg = f"Обробку завершено!\n\nОброблено файлів: {processed_count}"
         if skipped_count > 0:
-            msg += f"\nПропущено: {skipped_count}"
+            msg += f"\nПропущено (без рамки): {skipped_count}"
+        if failed_files:
+            msg += f"\nПомилка обробки: {len(failed_files)}"
         msg += f"\n\nФайли збережено у:\n{output_dir}"
 
-        QMessageBox.information(self, "Успішно!", msg)
+        if failed_files:
+            shown = failed_files[:10]
+            msg += "\n\nФайли з помилкою:\n" + "\n".join(
+                f"  • {name}: {reason}" for name, reason in shown
+            )
+            if len(failed_files) > 10:
+                msg += f"\n  … і ще {len(failed_files) - 10}"
+
+        has_problems = skipped_count > 0 or bool(failed_files)
+        title = "Є пропущені або помилкові файли" if has_problems else "Успішно!"
+        if has_problems:
+            QMessageBox.warning(self, title, msg)
+        else:
+            QMessageBox.information(self, title, msg)
 
 
 if __name__ == "__main__":
