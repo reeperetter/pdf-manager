@@ -20,7 +20,22 @@ from .ocr import (detect_and_fix_orientation, dewarp_page_image,
                  ocr_lines_from_image)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-BUNDLED_FONT = os.path.join(SCRIPT_DIR, "DejaVuSans.ttf")
+# DejaVuSans.ttf фізично лежить у КОРЕНІ репозиторію (поруч із main.py), а
+# не в modules/pdf_translator/. У зібраному --onedir/--onefile застосунку
+# це не впадало в очі, бо build.yml явно копіює файл саме сюди через
+# --add-data "DejaVuSans.ttf;modules/pdf_translator" - але при запуску з
+# сирого коду такого копіювання ніхто не робить, SCRIPT_DIR/DejaVuSans.ttf
+# просто не існує, і пошук одразу провалювався в FALLBACK_FONTS (жорстко
+# прописані системні шляхи, яких на конкретній машині може й не бути -
+# звідси "Не знайдено TTF-шрифт з підтримкою кирилиці" при запуску з коду).
+# Перевіряємо обидва місця, щоб працювало і так, і так, незалежно від
+# того, чи є той самий --add-data у build.yml.
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
+_BUNDLED_FONT_CANDIDATES = [
+    os.path.join(SCRIPT_DIR, "DejaVuSans.ttf"),
+    os.path.join(_PROJECT_ROOT, "DejaVuSans.ttf"),
+]
+BUNDLED_FONT = next((p for p in _BUNDLED_FONT_CANDIDATES if os.path.isfile(p)), None)
 
 FALLBACK_FONTS = [
     r"C:\Windows\Fonts\arial.ttf",
@@ -50,7 +65,7 @@ def find_unicode_font(user_path=None):
     """Повертає шлях до TTF-шрифту, що підтримує кирилицю."""
     if user_path and os.path.isfile(user_path):
         return user_path
-    if os.path.isfile(BUNDLED_FONT):
+    if BUNDLED_FONT and os.path.isfile(BUNDLED_FONT):
         return BUNDLED_FONT
     for p in FALLBACK_FONTS:
         if os.path.isfile(p):

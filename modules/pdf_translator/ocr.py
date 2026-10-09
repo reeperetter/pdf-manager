@@ -6,6 +6,7 @@
 переклад, збереження файлів) - у pdf_pipeline.py.
 """
 import contextlib
+import glob
 import os
 import shutil
 import time
@@ -14,6 +15,47 @@ import pytesseract
 from PIL import Image, ImageOps
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _refresh_path_from_registry():
+    """Windows-only: дочитує актуальний PATH напряму з реєстру (і
+    системний, і користувацький).
+
+    os.environ["PATH"] успадковується ОДИН РАЗ при старті процесу -
+    якщо після запуску PDFManager.exe winget дописав Tesseract у PATH
+    (системний чи користувацький), поточний процес цього не побачить,
+    доки його не перезапустять. shutil.which("tesseract") у такому разі
+    мовчки не знаходить щойно встановлений бінарник, і find_tesseract_cmd()
+    щоразу скочується до "не знайдено" - навіть якщо встановлення
+    насправді пройшло успішно. Читаємо PATH напряму з реєстру (так само,
+    як це робить сам Провідник після "Варіант застосувати зміни PATH")
+    і домішуємо до os.environ["PATH"] поточного процесу."""
+    if os.name != "nt":
+        return
+    try:
+        import winreg
+    except ImportError:
+        return
+
+    pieces = []
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        ) as key:
+            pieces.append(winreg.QueryValueEx(key, "Path")[0])
+    except OSError:
+        pass
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            pieces.append(winreg.QueryValueEx(key, "Path")[0])
+    except OSError:
+        pass
+
+    if not pieces:
+        return
+    fresh_path = ";".join(p for p in pieces if p)
+    os.environ["PATH"] = fresh_path + ";" + os.environ.get("PATH", "")
 
 
 @contextlib.contextmanager
@@ -88,15 +130,39 @@ def find_tesseract_cmd():
             os.environ["TESSDATA_PREFIX"] = tessdata
         return bundled_bin
 
+    if os.name == "nt":
+        # winget міг дописати PATH ПІСЛЯ старту цього процесу - без цього
+        # щойно встановлений tesseract не знайдеться через PATH, доки
+        # програму не перезапустять вручну.
+        _refresh_path_from_registry()
+
     system_bin = shutil.which("tesseract")
     if system_bin:
         return system_bin
 
     if os.name == "nt":
-        for p in (
+        local_appdata = os.environ.get("LOCALAPPDATA", "")
+        candidates = [
             r"C:\Program Files\Tesseract-OCR\tesseract.exe",
             r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-        ):
+        ]
+        if local_appdata:
+            # winget install --silent БЕЗ підвищення прав типово ставить
+            # пакет у профіль користувача, а не в Program Files - раніше
+            # ці шляхи взагалі не перевірялись, тож find_tesseract_cmd()
+            # мовчки не знаходив щойно встановлений Tesseract, і при
+            # кожному наступному запуску програма знову пропонувала
+            # "встановити", хоча він уже стояв.
+            candidates.append(
+                os.path.join(local_appdata, "Programs", "Tesseract-OCR", "tesseract.exe")
+            )
+            candidates.extend(
+                glob.glob(os.path.join(
+                    local_appdata, "Microsoft", "WinGet", "Packages",
+                    "UB-Mannheim.TesseractOCR_*", "tesseract.exe",
+                ))
+            )
+        for p in candidates:
             if os.path.isfile(p):
                 return p
     return None

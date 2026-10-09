@@ -100,19 +100,38 @@ jobs:
       # DejaVuSans.ttf і modules/pdf_translator/installers кладемо саме в
       # modules/pdf_translator, бо саме там їх шукає код (BUNDLED_FONT і
       # tesseract_installer.py - шляхи відносно __file__ свого модуля).
+      #
+      # --icon PDFManager.ico вшиває іконку В САМ .exe-файл - це те, що
+      # видно у провіднику, на панелі задач, на ярлику на стільниці тощо.
+      # --add-data "PDFManager.ico;." кладе той самий файл у корінь
+      # розпакованого бандла (dist/PDFManager/_internal/PDFManager.ico) -
+      # його за рантайму читає main.py (APP_ICON_PATH, поряд із __file__
+      # головного скрипта) для встановлення іконки вікна/панелі задач
+      # всередині самого застосунку. Без цього коду рантайм-іконка
+      # мовчки відкочувалась би до старої векторної.
       - name: Build EXE (Windows)
         if: steps.check.outputs.run == 'true' && matrix.os == 'windows-latest'
         run: |
           uv run --with pyinstaller pyinstaller --onedir --windowed --name PDFManager `
+            --icon PDFManager.ico `
+            --add-data "PDFManager.ico;." `
             --add-data "DejaVuSans.ttf;modules/pdf_translator" `
             --add-data "modules/pdf_translator/installers;modules/pdf_translator/installers" `
             main.py
 
       # ---- Збірка для Linux (тека з бінарником, не --onefile) ----
+      # ELF-бінарники (на відміну від Windows .exe) не мають вбудованого
+      # ресурсу "іконка файлу", тому --icon тут нічого не дає - іконку в
+      # провіднику на Linux встановлюють через .desktop-файл (Icon=...),
+      # чого в цьому проєкті поки немає. Але --add-data все одно потрібен:
+      # той самий PDFManager.ico бандлиться поруч із застосунком, і
+      # main.py читає його за рантайму, щоб виставити іконку вікна й
+      # кнопки на панелі задач усередині самого Qt-застосунку.
       - name: Build binary (Linux)
         if: steps.check.outputs.run == 'true' && matrix.os == 'ubuntu-22.04'
         run: |
           uv run --with pyinstaller pyinstaller --onedir --windowed --name PDFManager \
+            --add-data "PDFManager.ico:." \
             --add-data "DejaVuSans.ttf:modules/pdf_translator" \
             --add-data "modules/pdf_translator/installers:modules/pdf_translator/installers" \
             main.py
