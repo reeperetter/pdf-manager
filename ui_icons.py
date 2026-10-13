@@ -70,6 +70,19 @@ def create_vector_icon(icon_type: str, color: str = None, size: int = 32) -> QtG
         path_right.closeSubpath()
         p.drawPath(path_right)
 
+    elif icon_type == "rotate":
+        # Дугова стрілка навколо прямокутника сторінки - символ повороту.
+        p.drawRoundedRect(10, 10, 12, 16, 2, 2)
+        rect = QtCore.QRectF(4, 4, 22, 22)
+        p.drawArc(rect, 20 * 16, 280 * 16)
+        arrow = QtGui.QPainterPath()
+        arrow.moveTo(23, 5)
+        arrow.lineTo(27, 8)
+        arrow.lineTo(22, 11)
+        arrow.closeSubpath()
+        p.setBrush(main_color)
+        p.drawPath(arrow)
+
     elif icon_type == "folder":
         path = QtGui.QPainterPath()
         path.moveTo(4, 8)

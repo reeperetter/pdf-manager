@@ -4,6 +4,7 @@ from ui_icons import create_vector_icon
 from theme import COLORS
 from modules.pdf_translator.gui import MainWindow as PDFTranslatorWidget
 from modules.pdf_cropper.cropper_widget import PDFBatchCropperWidget
+from modules.pdf_rotator.rotator_widget import PDFBatchRotatorWidget
 from modules.pdf_compressor.compressor_widget import PDFBatchCompressorWidget
 
 
@@ -39,11 +40,13 @@ class ModernSidebar(QtWidgets.QFrame):
         self.btn_home = self._create_nav_button("Головна", "home", 0)
         self.btn_ocr = self._create_nav_button("OCR та Переклад", "ocr", 1)
         self.btn_crop = self._create_nav_button("Пакетна Обрізка", "crop", 2)
-        self.btn_compress = self._create_nav_button("Стиснення PDF", "compress", 3)
+        self.btn_rotate = self._create_nav_button("Поворот сторінок", "rotate", 3)
+        self.btn_compress = self._create_nav_button("Стиснення PDF", "compress", 4)
 
         layout.addWidget(self.btn_home)
         layout.addWidget(self.btn_ocr)
         layout.addWidget(self.btn_crop)
+        layout.addWidget(self.btn_rotate)
         layout.addWidget(self.btn_compress)
 
         layout.addStretch()
@@ -143,8 +146,9 @@ class HomePage(QtWidgets.QWidget):
 
         cards_info = [
             (1, "OCR та Переклад", "Розпізнавання тексту зі сканів та перекладених PDF, з підтримкою глосарію.", "ocr"),
-            (2, "Пакетна Обрізка", "Обрізка полів і поворот сторінок одразу для декількох PDF-файлів.", "crop"),
-            (3, "Стиснення PDF", "Зменшення розміру одного чи пакету PDF-файлів без відчутної втрати якості.", "compress"),
+            (2, "Пакетна Обрізка", "Обрізка полів для декількох PDF-файлів одразу, за рамкою, яку ви задаєте.", "crop"),
+            (3, "Поворот сторінок", "Пакетний поворот сторінок PDF-файлів на 90°/180°/270° без обрізки.", "rotate"),
+            (4, "Стиснення PDF", "Зменшення розміру одного чи пакету PDF-файлів без відчутної втрати якості.", "compress"),
         ]
 
         for index, tool_title, tool_desc, icon_type in cards_info:
@@ -182,6 +186,7 @@ class MainHubWindow(QtWidgets.QMainWindow):
 
         self.translator_widget = PDFTranslatorWidget()
         self.cropper_widget = PDFBatchCropperWidget()
+        self.rotator_widget = PDFBatchRotatorWidget()
         self.compressor_widget = PDFBatchCompressorWidget()
 
         self.home_page = HomePage()
@@ -190,6 +195,7 @@ class MainHubWindow(QtWidgets.QMainWindow):
         self.stack.addWidget(self.home_page)
         self.stack.addWidget(self.translator_widget)
         self.stack.addWidget(self.cropper_widget)
+        self.stack.addWidget(self.rotator_widget)
         self.stack.addWidget(self.compressor_widget)
 
         main_layout.addWidget(self.stack, stretch=1)
