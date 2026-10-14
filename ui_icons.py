@@ -83,6 +83,21 @@ def create_vector_icon(icon_type: str, color: str = None, size: int = 32) -> QtG
         p.setBrush(main_color)
         p.drawPath(arrow)
 
+    elif icon_type == "image":
+        # Рамка "фото" з гірським пейзажем і сонцем - типова іконка
+        # зображення/галереї.
+        p.drawRoundedRect(4, 6, 24, 20, 3, 3)
+        p.setBrush(main_color)
+        p.drawEllipse(9, 11, 5, 5)
+        p.setBrush(QtCore.Qt.NoBrush)
+        path = QtGui.QPainterPath()
+        path.moveTo(6, 23)
+        path.lineTo(13, 15)
+        path.lineTo(18, 20)
+        path.lineTo(22, 16)
+        path.lineTo(26, 21)
+        p.drawPath(path)
+
     elif icon_type == "folder":
         path = QtGui.QPainterPath()
         path.moveTo(4, 8)

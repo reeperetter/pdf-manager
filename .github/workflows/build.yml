@@ -168,14 +168,23 @@ jobs:
           cd dist
           zip -r ../PDFManager-linux.zip PDFManager
 
+      # upload-artifact САМ пакує те, що йому передати, в zip для
+      # завантаження через UI GitHub Actions - якщо віддати йому вже
+      # готовий PDFManager-windows.zip/PDFManager-linux.zip (з кроку
+      # "Package build" вище), на виході виходить zip, що містить
+      # усередині інший zip з такою самою назвою ("zip у zip"), що й
+      # незручно для ручного розпакування, і просто зайве. Тому сюди
+      # віддаємо саму теку dist/PDFManager - upload-artifact запакує її
+      # рівно один раз. Готові .zip-файли з кроку "Package build" нікуди
+      # не діваються - вони, як і раніше, потрібні окремо для вкладень у
+      # GitHub Release нижче (softprops/action-gh-release очікує саме
+      # файли, а не артефакт Actions).
       - name: Upload artifact
         if: steps.check.outputs.run == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: PDFManager-${{ matrix.name }}
-          path: |
-            PDFManager-windows.zip
-            PDFManager-linux.zip
+          path: dist/PDFManager
           if-no-files-found: ignore
 
       - name: Create GitHub Release

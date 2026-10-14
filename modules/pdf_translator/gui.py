@@ -16,16 +16,13 @@ from theme import COLORS
 from .ocr import _lazy_import_cv2
 from .tesseract_installer import ensure_tesseract_available
 from .pdf_pipeline import (
-    IMAGE_EXTENSIONS,
     ProcessingCancelled,
     process_pdf,
-    images_to_pdf,
 )
 
 
 class DropListWidget(QtWidgets.QListWidget):
     filesDropped = QtCore.pyqtSignal(list)
-    imagesDropped = QtCore.pyqtSignal(list)
     reordered = QtCore.pyqtSignal()
 
     def __init__(self, parent=None):
@@ -51,8 +48,11 @@ class DropListWidget(QtWidgets.QListWidget):
             super().dropEvent(event)
             self.reordered.emit()
             return
+        # Конвертація зображень у PDF - окремий інструмент
+        # (modules/pdf_image2pdf/), тому ця вкладка приймає перетягуванням
+        # лише PDF-файли й папки з ними; зображення, перетягнуті сюди,
+        # просто ігноруються.
         pdf_paths = []
-        image_paths = []
         for url in event.mimeData().urls():
             local = url.toLocalFile()
             if not local:
@@ -61,12 +61,8 @@ class DropListWidget(QtWidgets.QListWidget):
                 pdf_paths.extend(sorted(glob.glob(os.path.join(local, "*.pdf"))))
             elif local.lower().endswith(".pdf"):
                 pdf_paths.append(local)
-            elif local.lower().endswith(IMAGE_EXTENSIONS):
-                image_paths.append(local)
         if pdf_paths:
             self.filesDropped.emit(pdf_paths)
-        if image_paths:
-            self.imagesDropped.emit(image_paths)
         event.acceptProposedAction()
 
 
@@ -75,7 +71,6 @@ class WorkerSignals(QtCore.QObject):
     progress = QtCore.pyqtSignal(int)
     status = QtCore.pyqtSignal(str)
     finished = QtCore.pyqtSignal()
-    image_conversion_done = QtCore.pyqtSignal(str)
     page_progress = QtCore.pyqtSignal(int, int)
 
 
@@ -99,7 +94,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.signals.progress.connect(self._set_progress)
         self.signals.status.connect(self._set_status)
         self.signals.finished.connect(self._on_finished)
-        self.signals.image_conversion_done.connect(self._on_image_conversion_done)
         self.signals.page_progress.connect(self._set_page_progress)
 
         self._build_ui()
@@ -142,7 +136,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.listbox.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.listbox.setMinimumHeight(110)
         self.listbox.filesDropped.connect(self._add_files_list)
-        self.listbox.imagesDropped.connect(self.convert_images_to_pdf)
         self.listbox.reordered.connect(self._resync_files_from_listbox)
         files_layout.addWidget(self.listbox, 1)
 
@@ -163,10 +156,6 @@ class MainWindow(QtWidgets.QMainWindow):
         btns.addWidget(btn_remove)
         btns.addWidget(btn_clear)
         btns.addStretch(1)
-
-        self.btn_images = QtWidgets.QPushButton("Зображення → PDF...")
-        self.btn_images.clicked.connect(lambda: self.convert_images_to_pdf(None))
-        files_outer.addWidget(self.btn_images)
 
         # ---- Куди зберегти ----
         grp_out = QtWidgets.QGroupBox("Куди зберегти результат")
@@ -393,99 +382,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.files.clear()
         self.listbox.clear()
 
-    def convert_images_to_pdf(self, image_paths):
-        if not image_paths:
-            image_paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
-                self, "Виберіть зображення", self.last_dir,
-                "Зображення (*.png *.jpg *.jpeg *.bmp *.tif *.tiff *.webp)",
-            )
-        if not image_paths:
-            return
-        self.last_dir = os.path.dirname(image_paths[0])
-
-        mode = "combined"
-        if len(image_paths) > 1:
-            box = QtWidgets.QMessageBox(self)
-            box.setWindowTitle("Формат результату")
-            box.setText(f"Вибрано {len(image_paths)} зображень. Як зібрати їх у PDF?")
-            btn_combined = box.addButton("Один PDF (усі сторінки)", QtWidgets.QMessageBox.AcceptRole)
-            btn_separate = box.addButton("Окремий PDF для кожного", QtWidgets.QMessageBox.ActionRole)
-            box.addButton("Скасувати", QtWidgets.QMessageBox.RejectRole)
-            box.exec_()
-            clicked = box.clickedButton()
-            if clicked == btn_combined:
-                mode = "combined"
-            elif clicked == btn_separate:
-                mode = "separate"
-            else:
-                return
-
-        if mode == "combined":
-            default_name = os.path.splitext(os.path.basename(image_paths[0]))[0] + ".pdf"
-            out_target, _ = QtWidgets.QFileDialog.getSaveFileName(
-                self, "Зберегти як PDF", os.path.join(self.last_dir, default_name), "PDF files (*.pdf)"
-            )
-            if not out_target:
-                return
-            if not out_target.lower().endswith(".pdf"):
-                out_target += ".pdf"
-        else:
-            out_target = QtWidgets.QFileDialog.getExistingDirectory(
-                self, "Папка для окремих PDF-файлів", self.last_dir)
-            if not out_target:
-                return
-            self.last_dir = out_target
-
-        self.cancel_event.clear()
-        self.start_btn.setEnabled(False)
-        self.btn_images.setEnabled(False)
-        self.cancel_btn.setEnabled(True)
-        self.progress.setRange(0, len(image_paths))
-        self.progress.setValue(0)
-        self.status_label.setText(f"Конвертація зображень: 0/{len(image_paths)}")
-
-        self.worker_thread = threading.Thread(
-            target=self._run_image_conversion,
-            args=(image_paths, mode, out_target),
-            daemon=True,
-        )
-        self.worker_thread.start()
-
-    def _run_image_conversion(self, image_paths, mode, out_target):
-        def progress_cb(done, total):
-            self.signals.progress.emit(done)
-            self.signals.status.emit(f"Конвертація зображень: {done}/{total}")
-            time.sleep(0.001)
-
-        try:
-            if mode == "combined":
-                images_to_pdf(
-                    image_paths, out_target, log_fn=self.log,
-                    progress_fn=progress_cb, cancel_event=self.cancel_event,
-                )
-                self.signals.log.emit(f"Створено PDF: {out_target}")
-                self.signals.image_conversion_done.emit(out_target)
-            else:
-                total = len(image_paths)
-                for i, img_path in enumerate(image_paths):
-                    if self.cancel_event.is_set():
-                        raise ProcessingCancelled()
-                    base = os.path.splitext(os.path.basename(img_path))[0]
-                    out_path = os.path.join(out_target, base + ".pdf")
-                    images_to_pdf([img_path], out_path, log_fn=self.log)
-                    self.signals.image_conversion_done.emit(out_path)
-                    progress_cb(i + 1, total)
-        except ProcessingCancelled:
-            self.signals.log.emit(">>> Скасовано користувачем.")
-        except Exception:
-            self.signals.log.emit(f"[ПОМИЛКА]:\n{traceback.format_exc()}")
-        finally:
-            self.signals.status.emit("Готово")
-            self.signals.finished.emit()
-
-    def _on_image_conversion_done(self, out_path):
-        self._add_files_list([out_path])
-
     def choose_font(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "Виберіть TTF-шрифт", self.last_dir, "TrueType Font (*.ttf)")
@@ -608,7 +504,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_finished(self):
         self.start_btn.setEnabled(True)
-        self.btn_images.setEnabled(True)
         self.cancel_btn.setEnabled(False)
         self.page_progress_label.setText("")
         self.page_progress.setValue(0)
@@ -671,7 +566,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.cancel_event.clear()
         self.start_btn.setEnabled(False)
-        self.btn_images.setEnabled(False)
         self.cancel_btn.setEnabled(True)
         self.progress.setRange(0, len(self.files))
         self.progress.setValue(0)
