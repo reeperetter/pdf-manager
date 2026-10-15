@@ -2,7 +2,8 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 
 from ui_icons import create_vector_icon
 from theme import COLORS
-from modules.pdf_translator.gui import MainWindow as PDFTranslatorWidget
+from modules.pdf_translator.ocr_widget import PDFOcrWidget
+from modules.pdf_translator.translate_widget import PDFTranslateWidget
 from modules.pdf_image2pdf.image2pdf_widget import PDFImageToPdfWidget
 from modules.pdf_cropper.cropper_widget import PDFBatchCropperWidget
 from modules.pdf_rotator.rotator_widget import PDFBatchRotatorWidget
@@ -39,14 +40,16 @@ class ModernSidebar(QtWidgets.QFrame):
         self.btn_group.setExclusive(True)
 
         self.btn_home = self._create_nav_button("Головна", "home", 0)
-        self.btn_ocr = self._create_nav_button("OCR та Переклад", "ocr", 1)
-        self.btn_image2pdf = self._create_nav_button("Зображення → PDF", "image", 2)
-        self.btn_crop = self._create_nav_button("Пакетна Обрізка", "crop", 3)
-        self.btn_rotate = self._create_nav_button("Поворот сторінок", "rotate", 4)
-        self.btn_compress = self._create_nav_button("Стиснення PDF", "compress", 5)
+        self.btn_ocr = self._create_nav_button("OCR (розпізнавання)", "ocr", 1)
+        self.btn_translate = self._create_nav_button("Переклад PDF", "translate", 2)
+        self.btn_image2pdf = self._create_nav_button("Зображення → PDF", "image", 3)
+        self.btn_crop = self._create_nav_button("Пакетна Обрізка", "crop", 4)
+        self.btn_rotate = self._create_nav_button("Поворот сторінок", "rotate", 5)
+        self.btn_compress = self._create_nav_button("Стиснення PDF", "compress", 6)
 
         layout.addWidget(self.btn_home)
         layout.addWidget(self.btn_ocr)
+        layout.addWidget(self.btn_translate)
         layout.addWidget(self.btn_image2pdf)
         layout.addWidget(self.btn_crop)
         layout.addWidget(self.btn_rotate)
@@ -148,11 +151,12 @@ class HomePage(QtWidgets.QWidget):
         cards_layout.setSpacing(20)
 
         cards_info = [
-            (1, "OCR та Переклад", "Розпізнавання тексту зі сканів та перекладених PDF, з підтримкою глосарію.", "ocr"),
-            (2, "Зображення → PDF", "Збирає JPG/PNG/BMP/TIFF/WEBP в один PDF чи окремий PDF на кожне зображення.", "image"),
-            (3, "Пакетна Обрізка", "Обрізка полів для декількох PDF-файлів одразу, за рамкою, яку ви задаєте.", "crop"),
-            (4, "Поворот сторінок", "Пакетний поворот сторінок PDF-файлів на 90°/180°/270° без обрізки.", "rotate"),
-            (5, "Стиснення PDF", "Зменшення розміру одного чи пакету PDF-файлів без відчутної втрати якості.", "compress"),
+            (1, "OCR (розпізнавання)", "Розпізнавання тексту у відсканованих PDF: PDF з виділюваним текстом та/або DOCX/TXT.", "ocr"),
+            (2, "Переклад PDF", "Переклад PDF українською, російською чи англійською зі збереженням макета.", "translate"),
+            (3, "Зображення → PDF", "Збирає JPG/PNG/BMP/TIFF/WEBP в один PDF чи окремий PDF на кожне зображення.", "image"),
+            (4, "Пакетна Обрізка", "Обрізка полів для декількох PDF-файлів одразу, за рамкою, яку ви задаєте.", "crop"),
+            (5, "Поворот сторінок", "Пакетний поворот сторінок PDF-файлів на 90°/180°/270° без обрізки.", "rotate"),
+            (6, "Стиснення PDF", "Зменшення розміру одного чи пакету PDF-файлів без відчутної втрати якості.", "compress"),
         ]
 
         for index, tool_title, tool_desc, icon_type in cards_info:
@@ -188,7 +192,8 @@ class MainHubWindow(QtWidgets.QMainWindow):
         self.stack = QtWidgets.QStackedWidget()
         self.stack.setObjectName("ContentArea")
 
-        self.translator_widget = PDFTranslatorWidget()
+        self.ocr_widget = PDFOcrWidget()
+        self.translate_widget = PDFTranslateWidget()
         self.image2pdf_widget = PDFImageToPdfWidget()
         self.cropper_widget = PDFBatchCropperWidget()
         self.rotator_widget = PDFBatchRotatorWidget()
@@ -198,7 +203,8 @@ class MainHubWindow(QtWidgets.QMainWindow):
         self.home_page.tool_selected.connect(self.go_to_module)
 
         self.stack.addWidget(self.home_page)
-        self.stack.addWidget(self.translator_widget)
+        self.stack.addWidget(self.ocr_widget)
+        self.stack.addWidget(self.translate_widget)
         self.stack.addWidget(self.image2pdf_widget)
         self.stack.addWidget(self.cropper_widget)
         self.stack.addWidget(self.rotator_widget)

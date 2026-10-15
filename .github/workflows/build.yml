@@ -162,6 +162,22 @@ jobs:
         if: steps.check.outputs.run == 'true' && matrix.os == 'windows-latest'
         run: Compress-Archive -Path dist/PDFManager -DestinationPath PDFManager-windows.zip
 
+      # ELF-бінарник не може нести власну іконку, тому в Linux-збірку
+      # додаємо PDFManager.png (витягується з PDFManager.ico) і скрипт
+      # install-linux.sh, що створює ярлик у меню застосунків з цією
+      # іконкою. Після розпакування: ./install-linux.sh
+      - name: Add desktop integration files (Linux)
+        if: steps.check.outputs.run == 'true' && matrix.os == 'ubuntu-22.04'
+        run: |
+          uv run python -c "
+          from PIL import Image
+          im = Image.open('PDFManager.ico')
+          im.size = max(im.info['sizes'])
+          im.convert('RGBA').save('dist/PDFManager/PDFManager.png')
+          "
+          cp packaging/linux/install-linux.sh dist/PDFManager/install-linux.sh
+          chmod +x dist/PDFManager/install-linux.sh
+
       - name: Package build (Linux)
         if: steps.check.outputs.run == 'true' && matrix.os == 'ubuntu-22.04'
         run: |

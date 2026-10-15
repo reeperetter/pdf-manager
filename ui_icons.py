@@ -83,6 +83,17 @@ def create_vector_icon(icon_type: str, color: str = None, size: int = 32) -> QtG
         p.setBrush(main_color)
         p.drawPath(arrow)
 
+    elif icon_type == "translate":
+        # Дві "бульбашки" з літерами - символ перекладу між мовами.
+        p.drawRoundedRect(4, 5, 15, 13, 2, 2)
+        p.drawLine(8, 9, 15, 9)
+        p.drawLine(11, 9, 11, 14)
+        p.drawLine(8, 14, 14, 14)
+        p.drawRoundedRect(13, 14, 15, 13, 2, 2)
+        p.drawLine(17, 23, 20, 17)
+        p.drawLine(20, 17, 23, 23)
+        p.drawLine(18, 21, 22, 21)
+
     elif icon_type == "image":
         # Рамка "фото" з гірським пейзажем і сонцем - типова іконка
         # зображення/галереї.
