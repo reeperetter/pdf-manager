@@ -307,10 +307,37 @@ STYLESHEET = f"""
         border-color: {COLORS['panel_border']};
     }}
 
+    /* ---- RadioButton ---- */
+    /* Раніше тут не було стилю для ::indicator взагалі - кружечок
+       рендерився нативним стилем ОС "як є", без жодного зв'язку з
+       кольоровою схемою застосунку, і на деяких системах/темах був
+       ледь помітний. Стилізуємо так само, як і QCheckBox вище (та сама
+       мова дизайну: обведення, заливка акцентним кольором, біла мітка
+       всередині при виборі), лише коло замість квадрата. */
     QRadioButton {{
         color: {COLORS['text']};
         background-color: transparent;
-        spacing: 6px;
+        spacing: 8px;
+    }}
+    QRadioButton::indicator {{
+        width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        background-color: {COLORS['input_bg']};
+        border: 1px solid #8C7B70;
+    }}
+    QRadioButton::indicator:hover {{
+        border-color: {COLORS['accent']};
+        background-color: #F5F0EB;
+    }}
+    QRadioButton::indicator:checked {{
+        background-color: {COLORS['accent']};
+        border-color: {COLORS['accent_dark']};
+        image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'><circle cx='8' cy='8' r='3.5' fill='white'/></svg>");
+    }}
+    QRadioButton::indicator:disabled {{
+        background-color: {COLORS['bg']};
+        border-color: {COLORS['panel_border']};
     }}
 
     QProgressBar {{

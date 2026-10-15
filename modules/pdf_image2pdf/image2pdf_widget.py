@@ -89,6 +89,8 @@ class PDFImageToPdfWidget(QtWidgets.QWidget):
         self.cancel_event = threading.Event()
         self.worker_thread = None
         self.last_dir = os.path.expanduser("~")
+        self.current_out_target = None
+        self._last_result_text = ""
 
         self.signals = WorkerSignals()
         self.signals.log.connect(self._append_log)
@@ -174,23 +176,25 @@ class PDFImageToPdfWidget(QtWidgets.QWidget):
         self.radio_combined.setChecked(True)
         self.radio_separate = QtWidgets.QRadioButton(
             "Окремий PDF-файл для кожного зображення")
-        self.radio_combined.toggled.connect(self._update_output_row)
         mode_layout.addWidget(self.radio_combined)
         mode_layout.addWidget(self.radio_separate)
 
         right_layout.addWidget(grp_mode)
 
-        # ---- Куди зберегти (перемикається залежно від режиму вище) ----
-        out_layout = QtWidgets.QHBoxLayout()
-        self.out_label = QtWidgets.QLabel("Зберегти як:")
-        self.out_edit = QtWidgets.QLineEdit()
-        self.out_edit.setPlaceholderText("Виберіть, куди зберегти результат...")
-        btn_out = QtWidgets.QPushButton("Огляд...")
-        btn_out.clicked.connect(self.choose_output)
-        out_layout.addWidget(self.out_label)
-        out_layout.addWidget(self.out_edit, 1)
-        out_layout.addWidget(btn_out)
-        right_layout.addLayout(out_layout)
+        # Куди зберегти результат питаємо НЕ тут окремим кроком, а прямо
+        # при натисканні "Конвертувати у PDF" нижче - і одразу правильний
+        # діалог (вибір файлу .pdf чи вибір папки) залежно від того, який
+        # з двох варіантів вище обрано. Раніше це був окремий рядок із
+        # полем і кнопкою "Огляд...", який треба було не забути натиснути
+        # заздалегідь - і, що гірше, якщо після вибору шляху користувач
+        # перемикав режим (один файл / декілька), поле не очищалось і
+        # лишало шлях від попереднього режиму (наприклад, вибрану папку,
+        # коли насправді вже обрано "один PDF").
+        self.out_hint = QtWidgets.QLabel()
+        self.out_hint.setObjectName("MutedLabel")
+        self.out_hint.setWordWrap(True)
+        self.radio_combined.toggled.connect(self._update_out_hint)
+        right_layout.addWidget(self.out_hint)
 
         # ---- Прогрес + запуск/скасування ----
         self.status_label = QtWidgets.QLabel("Готово")
@@ -233,7 +237,7 @@ class PDFImageToPdfWidget(QtWidgets.QWidget):
 
         QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+O"), self, self.add_images)
 
-        self._update_output_row()
+        self._update_out_hint()
 
     # --------------------------------------------------------- список --
     def append_images(self, paths):
@@ -327,33 +331,15 @@ class PDFImageToPdfWidget(QtWidgets.QWidget):
         self.on_selection_changed(self.list_widget.currentRow())
 
     # --------------------------------------------------------- режим --
-    def _update_output_row(self):
+    def _update_out_hint(self):
         if self.radio_combined.isChecked():
-            self.out_label.setText("Зберегти як:")
-            self.out_edit.setPlaceholderText("Виберіть файл .pdf для збереження...")
+            self.out_hint.setText(
+                "Натискання «Конвертувати у PDF» одразу запропонує вибрати "
+                "файл .pdf для збереження.")
         else:
-            self.out_label.setText("Папка для PDF-файлів:")
-            self.out_edit.setPlaceholderText("Виберіть папку, куди зберегти по одному PDF на зображення...")
-
-    def choose_output(self):
-        if self.radio_combined.isChecked():
-            default_name = "images.pdf"
-            if self.image_paths:
-                default_name = os.path.splitext(os.path.basename(self.image_paths[0]))[0] + ".pdf"
-            path, _ = QtWidgets.QFileDialog.getSaveFileName(
-                self, "Зберегти як PDF", os.path.join(self.last_dir, default_name),
-                "PDF files (*.pdf)")
-            if path:
-                if not path.lower().endswith(".pdf"):
-                    path += ".pdf"
-                self.out_edit.setText(path)
-                self.last_dir = os.path.dirname(path)
-        else:
-            folder = QtWidgets.QFileDialog.getExistingDirectory(
-                self, "Папка для окремих PDF-файлів", self.last_dir)
-            if folder:
-                self.out_edit.setText(folder)
-                self.last_dir = folder
+            self.out_hint.setText(
+                "Натискання «Конвертувати у PDF» одразу запропонує вибрати "
+                "папку - по одному PDF-файлу на кожне зображення.")
 
     # ----------------------------------------------------- конвертація --
     def start_conversion(self):
@@ -361,15 +347,28 @@ class PDFImageToPdfWidget(QtWidgets.QWidget):
             QtWidgets.QMessageBox.warning(self, "Помилка", "Список зображень порожній!")
             return
 
-        out_target = self.out_edit.text().strip()
-        if not out_target:
-            QtWidgets.QMessageBox.warning(
-                self, "Помилка", "Спочатку виберіть, куди зберегти результат (кнопка «Огляд...»).")
-            return
-
         mode = "combined" if self.radio_combined.isChecked() else "separate"
-        if mode == "separate":
-            os.makedirs(out_target, exist_ok=True)
+
+        if mode == "combined":
+            default_name = "images.pdf"
+            if self.image_paths:
+                default_name = os.path.splitext(os.path.basename(self.image_paths[0]))[0] + ".pdf"
+            out_target, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self, "Зберегти як PDF", os.path.join(self.last_dir, default_name),
+                "PDF files (*.pdf)")
+            if not out_target:
+                return
+            if not out_target.lower().endswith(".pdf"):
+                out_target += ".pdf"
+            self.last_dir = os.path.dirname(out_target)
+        else:
+            out_target = QtWidgets.QFileDialog.getExistingDirectory(
+                self, "Папка для окремих PDF-файлів", self.last_dir)
+            if not out_target:
+                return
+            self.last_dir = out_target
+
+        self.current_out_target = out_target
 
         self.cancel_event.clear()
         self.btn_convert.setEnabled(False)
@@ -378,6 +377,9 @@ class PDFImageToPdfWidget(QtWidgets.QWidget):
         self.progress_bar.setValue(0)
         self.status_label.setText(f"Конвертація: 0/{len(self.image_paths)}")
 
+        # Знімок списку в момент запуску - щоб подальша зміна списку
+        # користувачем під час фонової обробки не вплинула на те, що
+        # вже конвертується.
         self.worker_thread = threading.Thread(
             target=self._run_conversion,
             args=(list(self.image_paths), mode, out_target),
@@ -397,24 +399,46 @@ class PDFImageToPdfWidget(QtWidgets.QWidget):
         def log_cb(msg):
             self.signals.log.emit(msg)
 
+        self._last_result_text = ""
         try:
             if mode == "combined":
                 images_to_pdf(
                     image_paths, out_target, log_fn=log_cb,
                     progress_fn=progress_cb, cancel_event=self.cancel_event,
                 )
+                self._last_result_text = (
+                    f"Створено один PDF із {len(image_paths)} зображень:\n{out_target}")
             else:
                 total = len(image_paths)
+                # Імена вихідних файлів беруться з назви зображення. Якщо
+                # серед вибраних є файли з однаковою назвою (з різних
+                # папок, або "photo.png" і "photo.jpg"), без цього вони
+                # писали б в один і той самий .pdf, і кожен наступний
+                # мовчки затирав би попередній - в результаті з кількох
+                # зображень лишався б лише один PDF. Додаємо лічильник
+                # "_1", "_2", ... і не перезаписуємо вже наявні файли.
+                used_paths = set()
+                created = 0
                 for i, img_path in enumerate(image_paths):
                     if self.cancel_event.is_set():
                         raise ProcessingCancelled()
                     base = os.path.splitext(os.path.basename(img_path))[0]
                     out_path = os.path.join(out_target, base + ".pdf")
+                    counter = 1
+                    while out_path in used_paths or os.path.exists(out_path):
+                        out_path = os.path.join(out_target, f"{base}_{counter}.pdf")
+                        counter += 1
+                    used_paths.add(out_path)
                     images_to_pdf([img_path], out_path, log_fn=log_cb)
+                    created += 1
                     progress_cb(i + 1, total)
+                self._last_result_text = (
+                    f"Створено PDF-файлів: {created}\nПапка:\n{out_target}")
         except ProcessingCancelled:
+            self._last_result_text = ""
             self.signals.status.emit("Скасовано")
         except Exception:
+            self._last_result_text = ""
             self.signals.error.emit(traceback.format_exc())
         finally:
             self.signals.finished.emit()
@@ -437,11 +461,10 @@ class PDFImageToPdfWidget(QtWidgets.QWidget):
     def _on_finished(self):
         self.btn_convert.setEnabled(True)
         self.btn_cancel.setEnabled(False)
-        if self.status_label.text() not in ("Скасовано",):
+        if self._last_result_text:
             self.status_label.setText("Готово")
             QtWidgets.QMessageBox.information(
-                self, "Успішно!",
-                f"Конвертацію завершено.\n\nРезультат збережено у:\n{self.out_edit.text().strip()}")
+                self, "Успішно!", f"Конвертацію завершено.\n\n{self._last_result_text}")
 
     def _on_error(self, trace_text):
         QtWidgets.QMessageBox.critical(
