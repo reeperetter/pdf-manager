@@ -34,10 +34,6 @@ def load_app_icon():
 
 def main():
     app = QtWidgets.QApplication(sys.argv)
-    # Ім'я .desktop-файлу (pdfmanager.desktop, див. install-linux.sh) -
-    # щоб Wayland/GNOME/KDE зіставляли вікно з ярликом і показували
-    # правильну іконку. На Windows/macOS нічого не змінює.
-    app.setDesktopFileName("pdfmanager")
     apply_theme(app)
 
     app_icon = load_app_icon()

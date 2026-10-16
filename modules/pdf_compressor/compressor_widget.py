@@ -15,6 +15,7 @@ from modules.pdf_compressor.compressor_core import (
     COMPRESSION_PRESETS, DEFAULT_PRESET_KEY, compress_pdf_file, format_size
 )
 from theme import apply_theme
+from ui_batch_extras import BatchExtras
 
 
 class CompressorDropListWidget(QListWidget):
@@ -92,7 +93,10 @@ class PDFBatchCompressorWidget(QWidget):
         btn_remove_selected.setIcon(self.get_style_icon(QStyle.SP_DialogDiscardButton))
         btn_remove_selected.clicked.connect(self.remove_selected_files)
 
+        self.extras = BatchExtras(self, "compress", self.append_files)
+
         left_layout.addWidget(btn_add_files)
+        left_layout.addWidget(self.extras.recent_button)
         left_layout.addWidget(btn_clear_list)
         left_layout.addWidget(QLabel("Файли (перетягніть PDF сюди):"))
         left_layout.addWidget(self.file_list_widget)
@@ -140,12 +144,13 @@ class PDFBatchCompressorWidget(QWidget):
         left_layout.addWidget(settings_group)
 
         save_options_layout = QHBoxLayout()
-        save_options_layout.addWidget(QLabel("Префікс збереження:"))
-        self.txt_prefix = QLineEdit("compressed_")
-        self.txt_prefix.setFixedWidth(120)
-        save_options_layout.addWidget(self.txt_prefix)
+        save_options_layout.addWidget(QLabel("Суфікс збереження:"))
+        self.txt_suffix = QLineEdit("_compressed")
+        self.txt_suffix.setFixedWidth(120)
+        save_options_layout.addWidget(self.txt_suffix)
         save_options_layout.addStretch()
         left_layout.addLayout(save_options_layout)
+        left_layout.addWidget(self.extras.skip_checkbox)
 
         left_panel.setLayout(left_layout)
 
@@ -182,6 +187,7 @@ class PDFBatchCompressorWidget(QWidget):
         btn_process_batch.clicked.connect(self.process_batch_compress)
 
         bottom_layout.addWidget(self.progress_bar)
+        bottom_layout.addWidget(self.extras.open_button)
         bottom_layout.addWidget(btn_process_batch)
 
         right_layout.addWidget(self.preview_label)
@@ -228,6 +234,7 @@ class PDFBatchCompressorWidget(QWidget):
                 size_txt = format_size(os.path.getsize(file_path))
                 item = QListWidgetItem(f"{filename}  ({size_txt})")
                 self.file_list_widget.addItem(item)
+                self.extras.remember([file_path])
 
         if self.file_list_widget.currentRow() == -1 and self.file_list_paths:
             self.file_list_widget.setCurrentRow(0)
@@ -291,8 +298,9 @@ class PDFBatchCompressorWidget(QWidget):
         if not output_dir:
             return
 
+        self.extras.set_output_dir(output_dir)
         max_dpi, jpeg_quality = self.current_settings()
-        prefix = self.txt_prefix.text().strip()
+        suffix = self.txt_suffix.text().strip()
 
         total_files = len(self.file_list_paths)
         self.progress_bar.setMaximum(total_files)
@@ -303,10 +311,12 @@ class PDFBatchCompressorWidget(QWidget):
         total_new = 0
         processed_count = 0
         failed_count = 0
+        skipped_count = 0
 
         for idx, file_path in enumerate(self.file_list_paths):
             filename = os.path.basename(file_path)
-            out_path = os.path.join(output_dir, f"{prefix}{filename}")
+            stem, ext = os.path.splitext(filename)
+            out_path = os.path.join(output_dir, f"{stem}{suffix}{ext}")
 
             row = self.results_table.rowCount()
             self.results_table.insertRow(row)
@@ -315,6 +325,13 @@ class PDFBatchCompressorWidget(QWidget):
             self.results_table.setItem(row, 2, QTableWidgetItem("…"))
             self.results_table.setItem(row, 3, QTableWidgetItem("…"))
             QApplication.processEvents()
+
+            if self.extras.skip_existing and os.path.exists(out_path):
+                skipped_count += 1
+                self.results_table.setItem(row, 2, QTableWidgetItem("Пропущено"))
+                self.results_table.setItem(row, 3, QTableWidgetItem("вже є"))
+                self.progress_bar.setValue(idx + 1)
+                continue
 
             try:
                 original_size, new_size = compress_pdf_file(
@@ -336,6 +353,8 @@ class PDFBatchCompressorWidget(QWidget):
             QApplication.processEvents()
 
         msg = f"Обробку завершено!\n\nОброблено файлів: {processed_count}"
+        if skipped_count:
+            msg += f"\nПропущено (вже є результат): {skipped_count}"
         if failed_count:
             msg += f"\nПомилок: {failed_count}"
         if total_original:

@@ -15,6 +15,7 @@ from PyQt5.QtGui import (
 )
 
 from theme import accent_qcolor, COLORS
+from ui_batch_extras import BatchExtras
 
 # Цей модуль відповідає ЛИШЕ за обрізку (рамку). Поворот сторінок - окремий
 # інструмент, modules/pdf_rotator/rotator_widget.py: раніше обидві функції
@@ -291,7 +292,10 @@ class PDFBatchCropperWidget(QWidget):
         btn_apply_crop.setMinimumHeight(32)
         btn_apply_crop.clicked.connect(self.apply_crop_to_all_files)
 
+        self.extras = BatchExtras(self, "crop", self.append_files)
+
         left_layout.addWidget(btn_add_files)
+        left_layout.addWidget(self.extras.recent_button)
         left_layout.addWidget(btn_clear_list)
         left_layout.addWidget(QLabel("Файли (перетягніть PDF сюди):"))
         left_layout.addWidget(self.file_list_widget)
@@ -336,10 +340,12 @@ class PDFBatchCropperWidget(QWidget):
         self.view = PDFCropView(self.scene, self)
 
         save_options_layout = QHBoxLayout()
-        save_options_layout.addWidget(QLabel("Префікс збереження:"))
-        self.txt_prefix = QLineEdit("cropped_")
-        self.txt_prefix.setFixedWidth(120)
-        save_options_layout.addWidget(self.txt_prefix)
+        save_options_layout.addWidget(QLabel("Суфікс збереження:"))
+        self.txt_suffix = QLineEdit("_cropped")
+        self.txt_suffix.setFixedWidth(120)
+        save_options_layout.addWidget(self.txt_suffix)
+        save_options_layout.addSpacing(16)
+        save_options_layout.addWidget(self.extras.skip_checkbox)
         save_options_layout.addStretch()
 
         bottom_layout = QHBoxLayout()
@@ -354,6 +360,7 @@ class PDFBatchCropperWidget(QWidget):
         btn_process_batch.clicked.connect(self.process_batch_crop)
 
         bottom_layout.addWidget(self.progress_bar)
+        bottom_layout.addWidget(self.extras.open_button)
         bottom_layout.addWidget(btn_process_batch)
 
         right_layout.addLayout(nav_layout)
@@ -459,6 +466,7 @@ class PDFBatchCropperWidget(QWidget):
                 self.file_list_paths.append(file_path)
                 self.file_list_widget.addItem("")
                 self.update_list_item_text(len(self.file_list_paths) - 1)
+                self.extras.remember([file_path])
 
         if self.file_list_widget.currentRow() == -1 and self.file_list_paths:
             self.file_list_widget.setCurrentRow(0)
@@ -618,7 +626,8 @@ class PDFBatchCropperWidget(QWidget):
         if not output_dir:
             return
 
-        prefix = self.txt_prefix.text().strip()
+        self.extras.set_output_dir(output_dir)
+        suffix = self.txt_suffix.text().strip()
         total_files = len(self.file_list_paths)
         self.progress_bar.setMaximum(total_files)
         self.progress_bar.setValue(0)
@@ -629,6 +638,7 @@ class PDFBatchCropperWidget(QWidget):
 
         processed_count = 0
         skipped_count = 0
+        existing_count = 0
         # Імена вихідних файлів беруться лише з basename(file_path). Якщо
         # серед вхідних файлів є кілька з ОДНАКОВОЮ назвою, але з різних
         # папок (типово для сканів/фото), усі вони писались би в один і
@@ -698,11 +708,19 @@ class PDFBatchCropperWidget(QWidget):
 
                 filename = os.path.basename(file_path)
                 stem, ext = os.path.splitext(filename)
-                out_path = os.path.join(output_dir, f"{prefix}{stem}{ext}")
+                out_path = os.path.join(output_dir, f"{stem}{suffix}{ext}")
+
+                # "Пропускати файли, для яких уже є результат".
+                if (self.extras.skip_existing and out_path not in used_out_paths
+                        and os.path.exists(out_path)):
+                    src_doc.close()
+                    existing_count += 1
+                    self.progress_bar.setValue(idx + 1)
+                    continue
 
                 dup_counter = 1
                 while out_path in used_out_paths or os.path.exists(out_path):
-                    out_path = os.path.join(output_dir, f"{prefix}{stem}_{dup_counter}{ext}")
+                    out_path = os.path.join(output_dir, f"{stem}{suffix}_{dup_counter}{ext}")
                     dup_counter += 1
                 used_out_paths.add(out_path)
 
@@ -724,6 +742,8 @@ class PDFBatchCropperWidget(QWidget):
         msg = f"Обробку завершено!\n\nОброблено файлів: {processed_count}"
         if skipped_count > 0:
             msg += f"\nПропущено (без рамки): {skipped_count}"
+        if existing_count:
+            msg += f"\nПропущено (вже є результат): {existing_count}"
         if failed_files:
             msg += f"\nПомилка обробки: {len(failed_files)}"
         msg += f"\n\nФайли збережено у:\n{output_dir}"

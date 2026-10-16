@@ -23,6 +23,7 @@ import traceback
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 from theme import COLORS
+from ui_batch_extras import BatchExtras
 from ui_icons import create_vector_icon
 from modules.pdf_translator.pdf_pipeline import (
     IMAGE_EXTENSIONS,
@@ -144,7 +145,15 @@ class PDFImageToPdfWidget(QtWidgets.QWidget):
         reorder_layout.addWidget(btn_up)
         reorder_layout.addWidget(btn_down)
 
+        self.extras = BatchExtras(
+            self, "image2pdf", self.append_images,
+            extensions=tuple(IMAGE_EXTENSIONS))
+        self.extras.skip_checkbox.setToolTip(
+            "Діє в режимі «окремий PDF для кожного зображення»: якщо PDF із "
+            "такою назвою вже є в папці, зображення пропускається.")
+
         left_layout.addWidget(btn_add)
+        left_layout.addWidget(self.extras.recent_button)
         left_layout.addWidget(btn_clear)
         left_layout.addWidget(hint)
         left_layout.addWidget(self.list_widget, 1)
@@ -178,6 +187,7 @@ class PDFImageToPdfWidget(QtWidgets.QWidget):
             "Окремий PDF-файл для кожного зображення")
         mode_layout.addWidget(self.radio_combined)
         mode_layout.addWidget(self.radio_separate)
+        mode_layout.addWidget(self.extras.skip_checkbox)
 
         right_layout.addWidget(grp_mode)
 
@@ -222,6 +232,7 @@ class PDFImageToPdfWidget(QtWidgets.QWidget):
 
         actions_layout.addWidget(self.btn_convert, 2)
         actions_layout.addWidget(self.btn_cancel, 1)
+        actions_layout.addWidget(self.extras.open_button, 1)
         right_layout.addLayout(actions_layout)
 
         right_panel.setLayout(right_layout)
@@ -248,6 +259,7 @@ class PDFImageToPdfWidget(QtWidgets.QWidget):
                 item.setIcon(self._make_thumbnail(path))
                 item.setData(QtCore.Qt.UserRole, path)
                 self.list_widget.addItem(item)
+                self.extras.remember([path])
 
         if self.list_widget.currentRow() == -1 and self.image_paths:
             self.list_widget.setCurrentRow(0)
@@ -369,6 +381,8 @@ class PDFImageToPdfWidget(QtWidgets.QWidget):
             self.last_dir = out_target
 
         self.current_out_target = out_target
+        self.extras.set_output_dir(
+            os.path.dirname(out_target) if mode == "combined" else out_target)
 
         self.cancel_event.clear()
         self.btn_convert.setEnabled(False)
@@ -419,11 +433,17 @@ class PDFImageToPdfWidget(QtWidgets.QWidget):
                 # "_1", "_2", ... і не перезаписуємо вже наявні файли.
                 used_paths = set()
                 created = 0
+                existing = 0
                 for i, img_path in enumerate(image_paths):
                     if self.cancel_event.is_set():
                         raise ProcessingCancelled()
                     base = os.path.splitext(os.path.basename(img_path))[0]
                     out_path = os.path.join(out_target, base + ".pdf")
+                    if self.extras.skip_existing and os.path.exists(out_path) \
+                            and out_path not in used_paths:
+                        existing += 1
+                        progress_cb(i + 1, total)
+                        continue
                     counter = 1
                     while out_path in used_paths or os.path.exists(out_path):
                         out_path = os.path.join(out_target, f"{base}_{counter}.pdf")
@@ -432,8 +452,10 @@ class PDFImageToPdfWidget(QtWidgets.QWidget):
                     images_to_pdf([img_path], out_path, log_fn=log_cb)
                     created += 1
                     progress_cb(i + 1, total)
+                extra = (f"\nПропущено (вже є результат): {existing}"
+                         if existing else "")
                 self._last_result_text = (
-                    f"Створено PDF-файлів: {created}\nПапка:\n{out_target}")
+                    f"Створено PDF-файлів: {created}{extra}\nПапка:\n{out_target}")
         except ProcessingCancelled:
             self._last_result_text = ""
             self.signals.status.emit("Скасовано")

@@ -245,9 +245,6 @@ def detect_and_fix_orientation(pil_img, log_fn=None):
             conf = fallback_conf
 
     if angle != 0:
-        if log_fn:
-            log_fn(
-                f"  Орієнтація: сторінку повернуто на {angle}° (conf: {conf:.1f}), виправляю...")
         # Повертаємо ОРИГІНАЛЬНЕ зображення, але повернуте на потрібний кут
         return pil_img.rotate(-angle, expand=True), True
 
@@ -557,9 +554,6 @@ def _dewarp_global_curve(pil_img, cv2, np, log_fn=None, cancel_event=None):
     dewarped = cv2.remap(
         arr, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
 
-    if log_fn:
-        log_fn(
-            f"  Розпрямлення: єдина крива для сторінки, викривлення до {max_bend:.0f}px")
     return Image.fromarray(dewarped)
 
 
@@ -596,8 +590,6 @@ def _dewarp_perline(pil_img, cv2, np, log_fn=None, cancel_event=None):
         })
 
     if len(line_infos) < 3:
-        if log_fn:
-            log_fn("  Розпрямлення: замало придатних рядків для оцінки, пропущено")
         return pil_img
 
     max_bend = max(
@@ -606,8 +598,6 @@ def _dewarp_perline(pil_img, cv2, np, log_fn=None, cancel_event=None):
         for li in line_infos
     )
     if max_bend < 3.0:
-        if log_fn:
-            log_fn("  Розпрямлення: помітного викривлення не виявлено, без змін")
         return pil_img
 
     line_infos.sort(key=lambda li: li["target_y"])
@@ -644,14 +634,8 @@ def _dewarp_perline(pil_img, cv2, np, log_fn=None, cancel_event=None):
         n_corrected += 1
 
     if n_corrected == 0:
-        if log_fn:
-            log_fn("  Розпрямлення: не вдалось скоригувати жоден рядок, пропущено")
         return pil_img
 
-    if log_fn:
-        log_fn(
-            f"  Розпрямлення: скориговано {n_corrected} рядків окремо "
-            f"(різна кривизна по рядках, до {max_bend:.0f}px)")
     return Image.fromarray(output)
 
 
@@ -662,8 +646,6 @@ def dewarp_page_image(pil_img, log_fn=None, cancel_event=None):
     result = _dewarp_global_curve(
         pil_img, cv2, np, log_fn=log_fn, cancel_event=cancel_event)
     if result == "no_bend":
-        if log_fn:
-            log_fn("  Розпрямлення: помітного викривлення не виявлено, без змін")
         return pil_img
     if result is not None:
         return result
@@ -671,7 +653,5 @@ def dewarp_page_image(pil_img, log_fn=None, cancel_event=None):
     if cancel_event and cancel_event.is_set():
         return pil_img
 
-    if log_fn:
-        log_fn("  Розпрямлення: єдина крива не підійшла (різна кривизна по рядках), пробую по-рядково...")
     return _dewarp_perline(
         pil_img, cv2, np, log_fn=log_fn, cancel_event=cancel_event)

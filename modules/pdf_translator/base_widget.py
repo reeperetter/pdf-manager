@@ -102,6 +102,10 @@ class PdfBatchToolBase(QtWidgets.QWidget):
     SETTINGS_PREFIX = "tool"
     COMMON_GROUP_TITLE = "Розпізнавання"
     EXPORT_ORIGINAL_TEXT = False
+    # Чи показувати DPI та "Виправляти викривлення". Вкладка перекладу їх
+    # ховає й завжди працює з DPI 300 без розпрямлення.
+    SHOW_RENDER_OPTIONS = True
+    DEFAULT_DPI = 300
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -111,6 +115,8 @@ class PdfBatchToolBase(QtWidgets.QWidget):
         self.last_dir = os.path.expanduser("~")
         self.last_output_dir = None
         self._last_summary = None
+        self._run_log = []
+        self._run_had_error = False
 
         self.settings = QtCore.QSettings(SETTINGS_ORG, SETTINGS_APP)
         self.log_file_path = os.path.join(
@@ -132,7 +138,8 @@ class PdfBatchToolBase(QtWidgets.QWidget):
 
     # ------------------------------------------------ хуки підкласів --
     def build_task_group(self, bold):
-        raise NotImplementedError
+        """Блок "Що створити" або None, якщо вкладці він не потрібен."""
+        return None
 
     def collect_task_options(self):
         raise NotImplementedError
@@ -189,7 +196,7 @@ class PdfBatchToolBase(QtWidgets.QWidget):
         btn_add_files.clicked.connect(self.add_files)
         btn_add_folder = QtWidgets.QPushButton("Додати папку...")
         btn_add_folder.clicked.connect(self.add_folder)
-        self.btn_recent = QtWidgets.QPushButton("Нещодавні ▾")
+        self.btn_recent = QtWidgets.QPushButton("Нещодавні")
         self.recent_menu = QtWidgets.QMenu(self.btn_recent)
         self.recent_menu.aboutToShow.connect(self._populate_recent_menu)
         self.btn_recent.setMenu(self.recent_menu)
@@ -231,7 +238,9 @@ class PdfBatchToolBase(QtWidgets.QWidget):
         left_col.addStretch(0)
 
         # ---- Права колонка ----
-        right_col.addWidget(self.build_task_group(bold))
+        task_group = self.build_task_group(bold)
+        if task_group is not None:
+            right_col.addWidget(task_group)
 
         grp_opts = QtWidgets.QGroupBox(self.COMMON_GROUP_TITLE)
         grp_opts.setFont(bold)
@@ -247,11 +256,12 @@ class PdfBatchToolBase(QtWidgets.QWidget):
         self.src_lang_combo.addItem("Англійська", "eng")
         opts_layout.addWidget(self.src_lang_combo, 0, 1, 1, 2)
 
-        opts_layout.addWidget(QtWidgets.QLabel("DPI:"), 1, 0)
+        self.dpi_label = QtWidgets.QLabel("DPI:")
+        opts_layout.addWidget(self.dpi_label, 1, 0)
         self.dpi_spin = QtWidgets.QSpinBox()
         self.dpi_spin.setRange(150, 600)
         self.dpi_spin.setSingleStep(50)
-        self.dpi_spin.setValue(300)
+        self.dpi_spin.setValue(self.DEFAULT_DPI)
         opts_layout.addWidget(self.dpi_spin, 1, 1, 1, 2)
 
         opts_layout.addWidget(QtWidgets.QLabel("Шрифт:"), 2, 0)
@@ -264,6 +274,9 @@ class PdfBatchToolBase(QtWidgets.QWidget):
 
         self.chk_dewarp = QtWidgets.QCheckBox("Виправляти викривлення сторінки")
         opts_layout.addWidget(self.chk_dewarp, 3, 0, 1, 3)
+        if not self.SHOW_RENDER_OPTIONS:
+            for w in (self.dpi_label, self.dpi_spin, self.chk_dewarp):
+                w.hide()
 
         # ---- Результат: окремі файли чи один спільний ----
         grp_mode = QtWidgets.QGroupBox("Результат")
@@ -449,10 +462,12 @@ class PdfBatchToolBase(QtWidgets.QWidget):
     def _load_settings(self):
         s = self.settings
         self.src_lang_combo.setCurrentIndex(int(s.value(self._key("src_lang_index"), 0)))
-        self.dpi_spin.setValue(int(s.value(self._key("dpi"), 300)))
+        if self.SHOW_RENDER_OPTIONS:
+            self.dpi_spin.setValue(int(s.value(self._key("dpi"), self.DEFAULT_DPI)))
         self.font_edit.setText(str(s.value(self._key("font_path"), "")))
         self.chk_skip_existing.setChecked(s.value(self._key("skip_existing"), True, type=bool))
-        self.chk_dewarp.setChecked(s.value(self._key("dewarp"), False, type=bool))
+        if self.SHOW_RENDER_OPTIONS:
+            self.chk_dewarp.setChecked(s.value(self._key("dewarp"), False, type=bool))
         self.chk_text_docx.setChecked(s.value(self._key("text_docx"), False, type=bool))
         self.chk_text_txt.setChecked(s.value(self._key("text_txt"), False, type=bool))
         self.text_split_combo.setCurrentIndex(int(s.value(self._key("text_split_index"), 0)))
@@ -512,14 +527,26 @@ class PdfBatchToolBase(QtWidgets.QWidget):
             box(self, title, text)
 
     def log(self, msg):
+        # Рядки поточного запуску копимо в пам'яті; у файл вони потрапляють
+        # лише якщо під час запуску були помилки (див. _flush_log_file).
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
         with self._log_file_lock:
-            try:
-                with open(self.log_file_path, "a", encoding="utf-8") as f:
-                    ts = time.strftime("%Y-%m-%d %H:%M:%S")
-                    f.write(f"[{ts}] {msg}\n")
-            except Exception:
-                pass
+            self._run_log.append(f"[{ts}] {msg}")
+            if "[ПОМИЛКА]" in msg:
+                self._run_had_error = True
         self.signals.log.emit(msg)
+
+    def _flush_log_file(self):
+        with self._log_file_lock:
+            lines, had_error = self._run_log, self._run_had_error
+            self._run_log, self._run_had_error = [], False
+        if not had_error:
+            return
+        try:
+            with open(self.log_file_path, "a", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+        except Exception:
+            pass
 
     # ------------------------------------------------------- запуск --
     def start_processing(self):
@@ -541,7 +568,7 @@ class PdfBatchToolBase(QtWidgets.QWidget):
         if not ensure_tesseract_available(self):
             return
 
-        dewarp = self.chk_dewarp.isChecked()
+        dewarp = self.SHOW_RENDER_OPTIONS and self.chk_dewarp.isChecked()
         if dewarp:
             try:
                 _lazy_import_cv2()
@@ -583,7 +610,7 @@ class PdfBatchToolBase(QtWidgets.QWidget):
             files=list(self.files),
             combined=combined,
             out_target=out_target,
-            dpi=self.dpi_spin.value(),
+            dpi=self.dpi_spin.value() if self.SHOW_RENDER_OPTIONS else self.DEFAULT_DPI,
             font_path=self.font_edit.text().strip() or None,
             source_lang=self.src_lang_combo.currentData(),
             dewarp=dewarp,
@@ -718,11 +745,6 @@ class PdfBatchToolBase(QtWidgets.QWidget):
             if combined is not None:
                 combined.close()
 
-        for name, pages in low_conf_report:
-            self.log(
-                f"  [!] {name}: невисока впевненість OCR на сторінках "
-                f"{', '.join(map(str, pages))} - варто перевірити вручну")
-
         if cancelled:
             self.signals.status.emit("Скасовано")
             self.log("=== Скасовано ===")
@@ -740,4 +762,5 @@ class PdfBatchToolBase(QtWidgets.QWidget):
             elif saved_total:
                 self._last_summary = (
                     "Готово", f"Створено файлів: {len(saved_total)}", False)
+        self._flush_log_file()
         self.signals.finished.emit()

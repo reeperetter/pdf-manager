@@ -12,8 +12,11 @@ class PDFTranslateWidget(PdfBatchToolBase):
     окрема вкладка "OCR"."""
 
     SETTINGS_PREFIX = "translate"
-    COMMON_GROUP_TITLE = "Мова та якість"
+    COMMON_GROUP_TITLE = "Мова та шрифт"
     EXPORT_ORIGINAL_TEXT = False
+    # DPI і розпрямлення впливають на якість розпізнавання сканів, а не на
+    # переклад, тому тут приховані (DPI завжди 300, без розпрямлення).
+    SHOW_RENDER_OPTIONS = False
 
     def build_task_group(self, bold):
         grp = QtWidgets.QGroupBox("Перекласти на")

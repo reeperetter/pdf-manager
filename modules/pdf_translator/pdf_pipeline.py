@@ -8,6 +8,7 @@
 """
 import gc
 import io
+import re
 import os
 import time
 
@@ -315,8 +316,6 @@ def translate_batch_microsoft(lines_list, target_lang="uk", source_lang="auto", 
     if actual_source == "auto" or (actual_source and "+" in actual_source):
         sample_text = " ".join([l.strip() for l in lines_list if l.strip()][:5])
         actual_source = detect_text_language(sample_text)
-        if log_fn:
-            log_fn(f"  [i] Автовизначення мови джерела: '{actual_source}'")
 
     # Мапінг кодів під вимоги MyMemory (потрібні повні локалі, напр. "uk-UA").
     # Комбобокс вибору мови в gui.py віддає 3-літерні коди Tesseract
@@ -337,9 +336,6 @@ def translate_batch_microsoft(lines_list, target_lang="uk", source_lang="auto", 
 
     tgt = lang_map.get(target_lang, target_lang)
     src = lang_map.get(actual_source, actual_source)
-
-    if log_fn:
-        log_fn(f"  [i] MyMemory: source='{src}' target='{tgt}'")
 
     try:
         translator = MyMemoryTranslator(source=src, target=tgt)
@@ -442,6 +438,56 @@ class PdfProcessResult:
         self.translated = {}
 
 
+
+def translate_with_glossary(texts, glossary, **kwargs):
+    """Переклад із глосарієм: терміни зі списку залишаються без змін.
+
+    Перед відправкою в перекладач кожен термін (без урахування регістру, як
+    окреме слово/фразу) підміняється нейтральним маркером QZX<n>QZ, який
+    перекладачі зазвичай не чіпають, а після отримання перекладу маркер
+    замінюється назад на оригінальний фрагмент. Якщо перекладач зіпсував
+    маркер, рядок лишається неперекладеним - так термін гарантовано не
+    буде спотворено.
+    """
+    terms = sorted({t.strip() for t in (glossary or ()) if t and t.strip()},
+                   key=len, reverse=True)
+    if not terms:
+        return translate_batch_microsoft(texts, **kwargs)
+
+    pattern = re.compile(
+        r"(?<!\w)(?:" + "|".join(re.escape(t) for t in terms) + r")(?!\w)",
+        re.IGNORECASE)
+
+    protected, originals = [], []
+    for text in texts:
+        found = []
+
+        def _sub(m, found=found):
+            found.append(m.group(0))
+            return f"QZX{len(found) - 1}QZ"
+
+        protected.append(pattern.sub(_sub, text))
+        originals.append(found)
+
+    translated = translate_batch_microsoft(protected, **kwargs)
+
+    result = []
+    for text, tr, found in zip(texts, translated, originals):
+        if not found:
+            result.append(tr)
+            continue
+        tr = tr or ""
+        ok = all(re.search(rf"QZX{i}QZ", tr, re.IGNORECASE)
+                 for i in range(len(found)))
+        if not ok:
+            result.append(text)
+            continue
+        for i, original in enumerate(found):
+            tr = re.sub(rf"QZX{i}QZ", lambda _m, o=original: o, tr,
+                        flags=re.IGNORECASE)
+        result.append(tr)
+    return result
+
 def _process_pdf_core(
     input_path,
     dpi,
@@ -488,7 +534,6 @@ def _process_pdf_core(
             in_range = (page_start is None or page_num >= page_start) and \
                        (page_end is None or page_num <= page_end)
 
-            log_fn(f"[{base_name}] Сторінка {page_num}/{n_pages}: рендеринг...")
             page = doc[page_index]
             pix = page.get_pixmap(dpi=dpi)
             img_bytes = pix.tobytes("png")
@@ -524,35 +569,21 @@ def _process_pdf_core(
             lines = []
             if in_range and (make_searchable or translate_targets or collect_text):
                 if was_rotated:
-                    log_fn(
-                        f"[{base_name}] Сторінка {page_num}/{n_pages}: "
-                        f"орієнтацію змінено — розпізнавання (OCR) за новими координатами...")
                     lines, ocr_score = ocr_lines_from_image(pil_img, source_lang=source_lang)
                     if lines and ocr_score < low_confidence_threshold:
                         low_confidence_pages.append(page_num)
                         log_fn(
-                            f"  [!] Сторінка {page_num}: невисока впевненість "
-                            f"OCR ({ocr_score:.0f}/100) - варто перевірити вручну")
+                            f"  [!] Стор. {page_num}: низька впевненість OCR "
+                            f"({ocr_score:.0f}/100)")
                 else:
                     lines = extract_lines_from_page(page)
-                    if lines:
-                        log_fn(
-                            f"[{base_name}] Сторінка {page_num}/{n_pages}: "
-                            f"текст з PDF ({len(lines)} рядків), OCR пропущено")
-                    else:
-                        log_fn(
-                            f"[{base_name}] Сторінка {page_num}/{n_pages}: "
-                            f"немає текстового шару — розпізнавання (OCR)...")
+                    if not lines:
                         lines, ocr_score = ocr_lines_from_image(pil_img, source_lang=source_lang)
                         if lines and ocr_score < low_confidence_threshold:
                             low_confidence_pages.append(page_num)
                             log_fn(
-                                f"  [!] Сторінка {page_num}: невисока впевненість "
-                                f"OCR ({ocr_score:.0f}/100) - варто перевірити вручну")
-            elif not in_range:
-                log_fn(
-                    f"[{base_name}] Сторінка {page_num}/{n_pages}: поза вибраним "
-                    f"діапазоном, пропущено (сторінку скопійовано без обробки)")
+                                f"  [!] Стор. {page_num}: низька впевненість OCR "
+                                f"({ocr_score:.0f}/100)")
 
             if export_text_formats:
                 original_page_texts.append("\n".join(ln["text"] for ln in lines))
@@ -584,13 +615,13 @@ def _process_pdf_core(
             if translate_targets:
                 translations = {}
                 if lines:
-                    log_fn(f"[{base_name}] Сторінка {page_num}/{n_pages}: переклад ({len(lines)} рядків)...")
                     raw_texts = [ln["text"] for ln in lines]
 
                     for lang in translate_targets:
-                        translated_lines = translate_batch_microsoft(
-                            raw_texts, target_lang=lang, source_lang=source_lang,
-                            log_fn=log_fn, cancel_event=cancel_event, deepl_api_key=deepl_api_key
+                        translated_lines = translate_with_glossary(
+                            raw_texts, glossary, target_lang=lang,
+                            source_lang=source_lang, log_fn=log_fn,
+                            cancel_event=cancel_event, deepl_api_key=deepl_api_key
                         )
                         translations[lang] = translated_lines
 

@@ -2,9 +2,10 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 
 from ui_icons import create_vector_icon
 from theme import COLORS
+from ui_tiles import TileGrid, ToolCard
 from modules.pdf_translator.ocr_widget import PDFOcrWidget
 from modules.pdf_translator.translate_widget import PDFTranslateWidget
-from modules.pdf_image2pdf.image2pdf_widget import PDFImageToPdfWidget
+from modules.pdf_convert.convert_hub import ConvertHubWidget
 from modules.pdf_cropper.cropper_widget import PDFBatchCropperWidget
 from modules.pdf_rotator.rotator_widget import PDFBatchRotatorWidget
 from modules.pdf_compressor.compressor_widget import PDFBatchCompressorWidget
@@ -42,7 +43,7 @@ class ModernSidebar(QtWidgets.QFrame):
         self.btn_home = self._create_nav_button("Головна", "home", 0)
         self.btn_ocr = self._create_nav_button("OCR (розпізнавання)", "ocr", 1)
         self.btn_translate = self._create_nav_button("Переклад PDF", "translate", 2)
-        self.btn_image2pdf = self._create_nav_button("Зображення → PDF", "image", 3)
+        self.btn_convert = self._create_nav_button("Конвертація", "convert", 3)
         self.btn_crop = self._create_nav_button("Пакетна Обрізка", "crop", 4)
         self.btn_rotate = self._create_nav_button("Поворот сторінок", "rotate", 5)
         self.btn_compress = self._create_nav_button("Стиснення PDF", "compress", 6)
@@ -50,7 +51,7 @@ class ModernSidebar(QtWidgets.QFrame):
         layout.addWidget(self.btn_home)
         layout.addWidget(self.btn_ocr)
         layout.addWidget(self.btn_translate)
-        layout.addWidget(self.btn_image2pdf)
+        layout.addWidget(self.btn_convert)
         layout.addWidget(self.btn_crop)
         layout.addWidget(self.btn_rotate)
         layout.addWidget(self.btn_compress)
@@ -83,47 +84,6 @@ class ModernSidebar(QtWidgets.QFrame):
         return btn
 
 
-class ToolCard(QtWidgets.QFrame):
-    """Клікабельна картка інструменту на головній сторінці."""
-    clicked = QtCore.pyqtSignal()
-
-    def __init__(self, title, description, icon_type, parent=None):
-        super().__init__(parent)
-        self.setObjectName("ToolCard")
-        self.setCursor(QtCore.Qt.PointingHandCursor)
-        self.setMinimumHeight(180)
-
-        layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(10)
-
-        icon_label = QtWidgets.QLabel()
-        icon_label.setObjectName("ToolCardIcon")
-        icon_label.setPixmap(create_vector_icon(icon_type, COLORS["accent"], size=40).pixmap(40, 40))
-        layout.addWidget(icon_label)
-
-        title_label = QtWidgets.QLabel(title)
-        title_label.setObjectName("ToolCardTitle")
-        title_label.setWordWrap(True)
-        layout.addWidget(title_label)
-
-        desc_label = QtWidgets.QLabel(description)
-        desc_label.setObjectName("ToolCardDesc")
-        desc_label.setWordWrap(True)
-        layout.addWidget(desc_label)
-
-        layout.addStretch()
-
-        open_label = QtWidgets.QLabel("Відкрити →")
-        open_label.setObjectName("ToolCardOpen")
-        layout.addWidget(open_label)
-
-    def mousePressEvent(self, event):
-        if event.button() == QtCore.Qt.LeftButton:
-            self.clicked.emit()
-        super().mousePressEvent(event)
-
-
 class HomePage(QtWidgets.QWidget):
     """Головна сторінка - вибір інструменту у вигляді карток."""
     tool_selected = QtCore.pyqtSignal(int)
@@ -147,25 +107,24 @@ class HomePage(QtWidgets.QWidget):
 
         outer_layout.addSpacing(10)
 
-        cards_layout = QtWidgets.QHBoxLayout()
-        cards_layout.setSpacing(20)
-
         cards_info = [
             (1, "OCR (розпізнавання)", "Розпізнавання тексту у відсканованих PDF: PDF з виділюваним текстом та/або DOCX/TXT.", "ocr"),
             (2, "Переклад PDF", "Переклад PDF українською, російською чи англійською зі збереженням макета.", "translate"),
-            (3, "Зображення → PDF", "Збирає JPG/PNG/BMP/TIFF/WEBP в один PDF чи окремий PDF на кожне зображення.", "image"),
+            (3, "Конвертація", "Зображення, Word, Excel, PowerPoint, текст у PDF і назад.", "convert"),
             (4, "Пакетна Обрізка", "Обрізка полів для декількох PDF-файлів одразу, за рамкою, яку ви задаєте.", "crop"),
             (5, "Поворот сторінок", "Пакетний поворот сторінок PDF-файлів на 90°/180°/270° без обрізки.", "rotate"),
             (6, "Стиснення PDF", "Зменшення розміру одного чи пакету PDF-файлів без відчутної втрати якості.", "compress"),
         ]
 
+        cards = []
         for index, tool_title, tool_desc, icon_type in cards_info:
             card = ToolCard(tool_title, tool_desc, icon_type)
             card.clicked.connect(lambda idx=index: self.tool_selected.emit(idx))
-            cards_layout.addWidget(card)
+            cards.append(card)
 
-        outer_layout.addLayout(cards_layout)
-        outer_layout.addStretch()
+        # Картки розкладаються сіткою, рівномірно заповнюють екран і
+        # перебудовуються при зміні розміру вікна.
+        outer_layout.addWidget(TileGrid(cards, min_tile_width=300), 1)
 
 
 class MainHubWindow(QtWidgets.QMainWindow):
@@ -194,7 +153,7 @@ class MainHubWindow(QtWidgets.QMainWindow):
 
         self.ocr_widget = PDFOcrWidget()
         self.translate_widget = PDFTranslateWidget()
-        self.image2pdf_widget = PDFImageToPdfWidget()
+        self.convert_widget = ConvertHubWidget()
         self.cropper_widget = PDFBatchCropperWidget()
         self.rotator_widget = PDFBatchRotatorWidget()
         self.compressor_widget = PDFBatchCompressorWidget()
@@ -205,7 +164,7 @@ class MainHubWindow(QtWidgets.QMainWindow):
         self.stack.addWidget(self.home_page)
         self.stack.addWidget(self.ocr_widget)
         self.stack.addWidget(self.translate_widget)
-        self.stack.addWidget(self.image2pdf_widget)
+        self.stack.addWidget(self.convert_widget)
         self.stack.addWidget(self.cropper_widget)
         self.stack.addWidget(self.rotator_widget)
         self.stack.addWidget(self.compressor_widget)
@@ -213,6 +172,10 @@ class MainHubWindow(QtWidgets.QMainWindow):
         main_layout.addWidget(self.stack, stretch=1)
 
     def switch_module(self, index):
+        # Повторний клік на "Конвертація" у бічній панелі повертає до
+        # каталогу конвертацій (так само, як "Головна" - на головну).
+        if index == 3 and self.stack.currentIndex() == 3:
+            self.convert_widget.show_home()
         self.stack.setCurrentIndex(index)
 
     def go_to_module(self, index):

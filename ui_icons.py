@@ -83,6 +83,50 @@ def create_vector_icon(icon_type: str, color: str = None, size: int = 32) -> QtG
         p.setBrush(main_color)
         p.drawPath(arrow)
 
+    elif icon_type == "convert":
+        # Дві протилежні стрілки - "конвертація туди й назад".
+        p.drawLine(6, 11, 25, 11)
+        p.drawLine(25, 11, 20, 6)
+        p.drawLine(25, 11, 20, 16)
+        p.drawLine(26, 21, 7, 21)
+        p.drawLine(7, 21, 12, 16)
+        p.drawLine(7, 21, 12, 26)
+
+    elif icon_type == "doc":
+        # Аркуш із загнутим кутом і рядками тексту.
+        path = QtGui.QPainterPath()
+        path.moveTo(8, 4)
+        path.lineTo(20, 4)
+        path.lineTo(26, 10)
+        path.lineTo(26, 28)
+        path.lineTo(8, 28)
+        path.closeSubpath()
+        p.drawPath(path)
+        p.drawLine(20, 4, 20, 10)
+        p.drawLine(20, 10, 26, 10)
+        p.drawLine(12, 16, 22, 16)
+        p.drawLine(12, 20, 22, 20)
+        p.drawLine(12, 24, 18, 24)
+
+    elif icon_type == "text":
+        p.drawRoundedRect(7, 4, 18, 24, 2, 2)
+        p.drawLine(11, 10, 21, 10)
+        p.drawLine(16, 10, 16, 22)
+
+    elif icon_type == "sheet":
+        p.drawRoundedRect(5, 6, 22, 20, 2, 2)
+        p.drawLine(5, 13, 27, 13)
+        p.drawLine(5, 20, 27, 20)
+        p.drawLine(13, 6, 13, 26)
+
+    elif icon_type == "slides":
+        p.drawRoundedRect(4, 6, 24, 15, 2, 2)
+        p.drawLine(16, 21, 16, 26)
+        p.drawLine(10, 26, 22, 26)
+        p.drawLine(9, 17, 9, 14)
+        p.drawLine(14, 17, 14, 11)
+        p.drawLine(19, 17, 19, 13)
+
     elif icon_type == "translate":
         # Дві "бульбашки" з літерами - символ перекладу між мовами.
         p.drawRoundedRect(4, 5, 15, 13, 2, 2)
