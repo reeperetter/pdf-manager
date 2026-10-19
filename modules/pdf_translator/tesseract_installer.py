@@ -52,6 +52,7 @@ def _run_command_responsively(program, args, timeout_ms=600_000):
     Повертає (успіх: bool, повідомлення_про_помилку: str).
     """
     process = QtCore.QProcess()
+    process.setProcessChannelMode(QtCore.QProcess.MergedChannels)
     loop = QtCore.QEventLoop()
     process.finished.connect(loop.quit)
     process.errorOccurred.connect(loop.quit)
@@ -80,11 +81,13 @@ def _run_command_responsively(program, args, timeout_ms=600_000):
         return False, "Перевищено час очікування встановлення."
 
     exit_code = process.exitCode()
-    stderr = bytes(process.readAllStandardError()).decode("utf-8", errors="ignore").strip()
+    output = bytes(process.readAll()).decode("utf-8", errors="ignore").strip()
+    _run_command_responsively.last_output = output
 
     if exit_code == 0:
         return True, ""
-    return False, stderr[-500:] if stderr else f"Код завершення: {exit_code}"
+    return False, (f"Код завершення: {exit_code}\n{output[-500:]}"
+                   if output else f"Код завершення: {exit_code}")
 
 
 def _install_linux(parent_widget):
@@ -188,9 +191,12 @@ def ensure_tesseract_available(parent_widget=None):
         )
         return new_cmd
 
+    details = getattr(_run_command_responsively, "last_output", "")
     QtWidgets.QMessageBox.warning(
         parent_widget, "Не вдалося встановити",
         "Встановлення завершилось, але Tesseract OCR досі не знайдено.\n"
-        "Можливо, варто перезапустити програму.",
+        "Перезапустіть програму; якщо не допоможе - встановіть Tesseract "
+        "вручну (https://github.com/UB-Mannheim/tesseract/wiki)."
+        + (f"\n\nВідповідь winget:\n{details[-400:]}" if details else ""),
     )
     return None

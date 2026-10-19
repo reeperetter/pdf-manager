@@ -162,10 +162,63 @@ def find_tesseract_cmd():
                     "UB-Mannheim.TesseractOCR_*", "tesseract.exe",
                 ))
             )
+        for var in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"):
+            base = os.environ.get(var)
+            if base:
+                candidates.append(os.path.join(
+                    base, "Tesseract-OCR", "tesseract.exe"))
+        candidates.extend(_windows_registry_tesseract_candidates())
         for p in candidates:
             if os.path.isfile(p):
                 return p
     return None
+
+
+def _windows_registry_tesseract_candidates():
+    """Windows-only: шляхи tesseract.exe з реєстру. Інсталятор UB Mannheim
+    записує теку встановлення в HKLM\\SOFTWARE\\Tesseract-OCR (ключ
+    InstallDir) і в розділ Uninstall - це знаходить Tesseract навіть тоді,
+    коли його встановлено в нестандартну теку чи на інший диск."""
+    try:
+        import winreg
+    except ImportError:
+        return []
+    found = []
+    views = (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY)
+    for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        for view in views:
+            try:
+                with winreg.OpenKey(root, r"SOFTWARE\Tesseract-OCR", 0,
+                                    winreg.KEY_READ | view) as key:
+                    found.append(os.path.join(
+                        winreg.QueryValueEx(key, "InstallDir")[0],
+                        "tesseract.exe"))
+            except OSError:
+                pass
+            try:
+                with winreg.OpenKey(
+                        root,
+                        r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+                        0, winreg.KEY_READ | view) as uninstall:
+                    i = 0
+                    while True:
+                        try:
+                            sub = winreg.EnumKey(uninstall, i)
+                        except OSError:
+                            break
+                        i += 1
+                        if "tesseract" not in sub.lower():
+                            continue
+                        try:
+                            with winreg.OpenKey(uninstall, sub) as k:
+                                loc = winreg.QueryValueEx(k, "InstallLocation")[0]
+                                if loc:
+                                    found.append(os.path.join(loc, "tesseract.exe"))
+                        except OSError:
+                            pass
+            except OSError:
+                pass
+    return found
 
 
 TESSERACT_CMD = find_tesseract_cmd()
