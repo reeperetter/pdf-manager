@@ -222,6 +222,118 @@ def _windows_registry_tesseract_candidates():
 
 
 TESSERACT_CMD = find_tesseract_cmd()
+
+# --------------------------------------------------------------------
+# Мовні моделі (*.traineddata). winget/інсталятор Tesseract ставить лише
+# eng та osd, тому українську/російську програма докачує сама в
+# користувацьку теку (вона не потребує прав адміністратора).
+# Структура: <USER_TESSDATA_ROOT>/tessdata/*.traineddata і КОПІЇ тих самих
+# файлів просто в <USER_TESSDATA_ROOT>/ - різні версії Tesseract по-різному
+# тлумачать TESSDATA_PREFIX (4.x: батьківська тека, 5.x: сама тека з
+# моделями), тому лежать обидва варіанти.
+def _user_tessdata_root():
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    else:
+        base = os.environ.get("XDG_DATA_HOME") or os.path.join(
+            os.path.expanduser("~"), ".local", "share")
+    return os.path.join(base, "PDFManager", "tesseract-data")
+
+
+USER_TESSDATA_ROOT = _user_tessdata_root()
+_TESSDATA_FAST_URL = (
+    "https://github.com/tesseract-ocr/tessdata_fast/raw/main/{lang}.traineddata")
+
+
+def required_languages(source_lang):
+    """Мови, потрібні для запуску з обраною мовою оригіналу (+ osd для
+    визначення орієнтації сторінки)."""
+    if source_lang == "auto":
+        langs = ["eng", "ukr", "rus"]
+    else:
+        langs = [p for p in (source_lang or "eng").split("+") if p]
+    return langs + ["osd"]
+
+
+def _tessdata_dirs():
+    """Теки, де Tesseract може шукати моделі."""
+    dirs = []
+    prefix = os.environ.get("TESSDATA_PREFIX")
+    if prefix:
+        dirs += [prefix, os.path.join(prefix, "tessdata")]
+    if TESSERACT_CMD:
+        dirs.append(os.path.join(os.path.dirname(TESSERACT_CMD), "tessdata"))
+    dirs += [os.path.join(USER_TESSDATA_ROOT, "tessdata"), USER_TESSDATA_ROOT]
+    for d in ("/usr/share/tesseract-ocr/5/tessdata",
+              "/usr/share/tesseract-ocr/4.00/tessdata",
+              "/usr/share/tessdata", "/usr/share/tesseract/tessdata"):
+        dirs.append(d)
+    return dirs
+
+
+def _find_traineddata(lang):
+    for d in _tessdata_dirs():
+        p = os.path.join(d, f"{lang}.traineddata")
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def missing_languages(source_lang):
+    """Список потрібних мов, для яких немає .traineddata."""
+    return [l for l in required_languages(source_lang)
+            if not _find_traineddata(l)]
+
+
+def use_user_tessdata():
+    """Якщо в користувацькій теці є повний набір моделей - спрямовуємо
+    Tesseract на неї (TESSDATA_PREFIX), інакше нічого не міняємо."""
+    if os.path.isfile(os.path.join(USER_TESSDATA_ROOT, "eng.traineddata")) and \
+            os.path.isfile(os.path.join(USER_TESSDATA_ROOT, "tessdata", "eng.traineddata")):
+        os.environ["TESSDATA_PREFIX"] = USER_TESSDATA_ROOT
+
+
+def install_language_data(langs, progress_cb=None):
+    """Кладе моделі в користувацьку теку: беремо вже наявні поруч із
+    встановленим Tesseract (eng, osd), решту докачуємо з tessdata_fast.
+    Піднімає RuntimeError з зрозумілим текстом при помилці мережі."""
+    import shutil
+    import urllib.request
+
+    sub = os.path.join(USER_TESSDATA_ROOT, "tessdata")
+    os.makedirs(sub, exist_ok=True)
+
+    # Користувацька тека має бути ПОВНОЮ (Tesseract не змішує теки), тому
+    # разом із потрібними мовами переносимо сюди й eng та osd.
+    wanted = list(dict.fromkeys(list(langs) + ["eng", "osd"]))
+    for i, lang in enumerate(wanted):
+        if progress_cb:
+            progress_cb(lang, i, len(wanted))
+        dst = os.path.join(sub, f"{lang}.traineddata")
+        if not os.path.isfile(dst):
+            src = _find_traineddata(lang)
+            if src and not src.startswith(USER_TESSDATA_ROOT):
+                shutil.copyfile(src, dst)
+            else:
+                url = _TESSDATA_FAST_URL.format(lang=lang)
+                tmp = dst + ".part"
+                try:
+                    with urllib.request.urlopen(url, timeout=60) as resp, \
+                            open(tmp, "wb") as f:
+                        shutil.copyfileobj(resp, f)
+                    os.replace(tmp, dst)
+                except Exception as e:
+                    if os.path.exists(tmp):
+                        os.remove(tmp)
+                    raise RuntimeError(
+                        f"Не вдалося завантажити мовну модель '{lang}': {e}")
+        copy2 = os.path.join(USER_TESSDATA_ROOT, f"{lang}.traineddata")
+        if not os.path.isfile(copy2):
+            shutil.copyfile(dst, copy2)
+    use_user_tessdata()
+
+
+use_user_tessdata()
 if TESSERACT_CMD:
     pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
 

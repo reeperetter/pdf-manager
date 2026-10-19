@@ -27,7 +27,7 @@ from .pdf_pipeline import (
     _process_pdf_core,
     process_pdf,
 )
-from .tesseract_installer import ensure_tesseract_available
+from .tesseract_installer import ensure_tesseract_available, ensure_language_data
 
 SETTINGS_ORG = "pdf-ocr-translator"
 SETTINGS_APP = "PDFManager"
@@ -566,6 +566,9 @@ class PdfBatchToolBase(QtWidgets.QWidget):
             export_text_formats.add("txt")
 
         if not ensure_tesseract_available(self):
+            return
+
+        if not ensure_language_data(self, self.src_lang_combo.currentData()):
             return
 
         dewarp = self.SHOW_RENDER_OPTIONS and self.chk_dewarp.isChecked()

@@ -200,3 +200,56 @@ def ensure_tesseract_available(parent_widget=None):
         + (f"\n\nВідповідь winget:\n{details[-400:]}" if details else ""),
     )
     return None
+
+
+def ensure_language_data(parent_widget, source_lang):
+    """Перевіряє, що для обраної мови оригіналу є мовні моделі Tesseract.
+    Якщо ні (типово після встановлення через winget лише eng/osd) -
+    пропонує докачати їх одним підтвердженням у користувацьку теку
+    (права адміністратора не потрібні). Повертає True, якщо можна
+    продовжувати."""
+    missing = ocr.missing_languages(source_lang)
+    if not missing:
+        return True
+
+    names = ", ".join(m for m in missing if m != "osd") or "osd"
+    choice = QtWidgets.QMessageBox.question(
+        parent_widget,
+        "Потрібні мовні моделі",
+        f"Для розпізнавання бракує мовних моделей Tesseract: {names}.\n"
+        "Завантажити їх зараз (кілька мегабайт, потрібен інтернет)?",
+        QtWidgets.QMessageBox.Ok | QtWidgets.QMessageBox.Cancel,
+        QtWidgets.QMessageBox.Ok,
+    )
+    if choice != QtWidgets.QMessageBox.Ok:
+        return False
+
+    progress = QtWidgets.QProgressDialog(
+        "Завантаження мовних моделей...", None, 0, 0, parent_widget)
+    progress.setWindowTitle("Зачекайте")
+    progress.setCancelButton(None)
+    progress.setWindowModality(QtCore.Qt.WindowModal)
+    progress.setMinimumDuration(0)
+    progress.show()
+    QtWidgets.QApplication.processEvents()
+
+    def _tick(lang, i, total):
+        progress.setLabelText(f"Завантаження мовних моделей: {lang} ({i + 1}/{total})...")
+        QtWidgets.QApplication.processEvents()
+
+    try:
+        ocr.install_language_data(ocr.required_languages(source_lang), _tick)
+    except Exception as e:
+        progress.close()
+        QtWidgets.QMessageBox.warning(
+            parent_widget, "Не вдалося завантажити", str(e))
+        return False
+    progress.close()
+
+    if ocr.missing_languages(source_lang):
+        QtWidgets.QMessageBox.warning(
+            parent_widget, "Не вдалося завантажити",
+            "Після завантаження моделі все одно не знайдено. Перезапустіть "
+            "програму й спробуйте ще раз.")
+        return False
+    return True
