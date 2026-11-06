@@ -9,6 +9,8 @@ from modules.pdf_convert.convert_hub import ConvertHubWidget
 from modules.pdf_cropper.cropper_widget import PDFBatchCropperWidget
 from modules.pdf_rotator.rotator_widget import PDFBatchRotatorWidget
 from modules.pdf_compressor.compressor_widget import PDFBatchCompressorWidget
+from modules.pdf_merge.merge_widget import PDFMergeWidget
+from modules.pdf_split.split_widget import PDFSplitWidget
 
 
 class ModernSidebar(QtWidgets.QFrame):
@@ -47,6 +49,8 @@ class ModernSidebar(QtWidgets.QFrame):
         self.btn_crop = self._create_nav_button("Пакетна Обрізка", "crop", 4)
         self.btn_rotate = self._create_nav_button("Поворот сторінок", "rotate", 5)
         self.btn_compress = self._create_nav_button("Стиснення PDF", "compress", 6)
+        self.btn_merge = self._create_nav_button("Об'єднання PDF", "merge", 7)
+        self.btn_split = self._create_nav_button("Розділення PDF", "split", 8)
 
         layout.addWidget(self.btn_home)
         layout.addWidget(self.btn_ocr)
@@ -55,6 +59,8 @@ class ModernSidebar(QtWidgets.QFrame):
         layout.addWidget(self.btn_crop)
         layout.addWidget(self.btn_rotate)
         layout.addWidget(self.btn_compress)
+        layout.addWidget(self.btn_merge)
+        layout.addWidget(self.btn_split)
 
         layout.addStretch()
 
@@ -114,6 +120,8 @@ class HomePage(QtWidgets.QWidget):
             (4, "Пакетна Обрізка", "Обрізка полів для декількох PDF-файлів одразу, за рамкою, яку ви задаєте.", "crop"),
             (5, "Поворот сторінок", "Пакетний поворот сторінок PDF-файлів на 90°/180°/270° без обрізки.", "rotate"),
             (6, "Стиснення PDF", "Зменшення розміру одного чи пакету PDF-файлів без відчутної втрати якості.", "compress"),
+            (7, "Об'єднання PDF", "Кілька PDF в один файл у потрібному порядку, із закладками.", "merge"),
+            (8, "Розділення PDF", "Розбиття PDF на сторінки, групи сторінок, діапазони чи розділи за закладками.", "split"),
         ]
 
         cards = []
@@ -157,6 +165,8 @@ class MainHubWindow(QtWidgets.QMainWindow):
         self.cropper_widget = PDFBatchCropperWidget()
         self.rotator_widget = PDFBatchRotatorWidget()
         self.compressor_widget = PDFBatchCompressorWidget()
+        self.merge_widget = PDFMergeWidget()
+        self.split_widget = PDFSplitWidget()
 
         self.home_page = HomePage()
         self.home_page.tool_selected.connect(self.go_to_module)
@@ -168,6 +178,8 @@ class MainHubWindow(QtWidgets.QMainWindow):
         self.stack.addWidget(self.cropper_widget)
         self.stack.addWidget(self.rotator_widget)
         self.stack.addWidget(self.compressor_widget)
+        self.stack.addWidget(self.merge_widget)
+        self.stack.addWidget(self.split_widget)
 
         main_layout.addWidget(self.stack, stretch=1)
 

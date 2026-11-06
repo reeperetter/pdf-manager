@@ -153,6 +153,28 @@ def create_vector_icon(icon_type: str, color: str = None, size: int = 32) -> QtG
         path.lineTo(26, 21)
         p.drawPath(path)
 
+    elif icon_type == "merge":
+        # Дві сторінки, що зливаються в одну стрілкою.
+        p.drawRoundedRect(3, 5, 11, 14, 2, 2)
+        p.drawRoundedRect(18, 5, 11, 14, 2, 2)
+        p.drawLine(8, 19, 8, 24)
+        p.drawLine(24, 19, 24, 24)
+        p.drawLine(8, 24, 24, 24)
+        p.drawLine(16, 24, 16, 29)
+        p.drawLine(16, 29, 13, 26)
+        p.drawLine(16, 29, 19, 26)
+
+    elif icon_type == "split":
+        # Одна сторінка, що розходиться на дві.
+        p.drawRoundedRect(9, 3, 14, 11, 2, 2)
+        p.drawLine(16, 14, 16, 18)
+        p.drawLine(16, 18, 8, 18)
+        p.drawLine(16, 18, 24, 18)
+        p.drawLine(8, 18, 8, 22)
+        p.drawLine(24, 18, 24, 22)
+        p.drawRoundedRect(3, 22, 11, 8, 2, 2)
+        p.drawRoundedRect(18, 22, 11, 8, 2, 2)
+
     elif icon_type == "folder":
         path = QtGui.QPainterPath()
         path.moveTo(4, 8)
