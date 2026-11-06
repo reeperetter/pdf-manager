@@ -3,10 +3,10 @@
 файлу й повертає список створених файлів; у разі проблем піднімає
 RuntimeError зі зрозумілим текстом.
 
-Office -> PDF (Word/Excel/PowerPoint) виконує LibreOffice у фоновому режимі:
-готового якісного Python-рішення для цього немає, а MS Office на машині
-користувача може бути відсутній. Якщо LibreOffice не знайдено - показуємо
-коротку підказку, де його взяти.
+Office -> PDF (Word/Excel/PowerPoint): Microsoft Office через COM (Windows),
+а якщо його немає - LibreOffice у фоновому режимі. Готового якісного
+Python-рішення без офісного пакета не існує. Якщо немає жодного - показуємо
+коротку підказку.
 """
 import glob
 import os
@@ -28,10 +28,10 @@ _FONT_CANDIDATES = [
 ]
 FONT_PATH = next((p for p in _FONT_CANDIDATES if os.path.isfile(p)), None)
 
-LIBREOFFICE_HINT = (
-    "Для конвертації Word/Excel/PowerPoint у PDF потрібен LibreOffice "
-    "(безкоштовний): https://www.libreoffice.org/download/\n"
-    "Встановіть його й перезапустіть програму.")
+OFFICE_HINT = (
+    "Для конвертації Word/Excel/PowerPoint у PDF потрібен Microsoft Office "
+    "або LibreOffice (безкоштовний): https://www.libreoffice.org/download/\n"
+    "Встановіть один із них і спробуйте ще раз.")
 
 
 # --------------------------------------------------------- LibreOffice --
@@ -55,10 +55,79 @@ def find_soffice():
     return None
 
 
-def office_to_pdf(src, out_path, **_):
+# ----------------------------------------------------------- MS Office --
+# Microsoft Office керується через COM з PowerShell (додаткових Python-
+# пакетів не потрібно). Шляхи передаємо через змінні середовища, щоб не
+# мучитися з лапками. Працює лише на Windows, де встановлено відповідну
+# програму (Word / Excel / PowerPoint).
+_MS_APPS = {
+    # розширення -> (ProgID, скрипт)
+    "word": ("Word.Application", r"""
+$ErrorActionPreference = 'Stop'
+$app = New-Object -ComObject Word.Application
+try {
+  $app.Visible = $false; $app.DisplayAlerts = 0
+  $doc = $app.Documents.Open($env:CONV_SRC, $false, $true)
+  try { $doc.ExportAsFixedFormat($env:CONV_OUT, 17) } finally { $doc.Close(0) }
+} finally { $app.Quit() }
+"""),
+    "excel": ("Excel.Application", r"""
+$ErrorActionPreference = 'Stop'
+$app = New-Object -ComObject Excel.Application
+try {
+  $app.Visible = $false; $app.DisplayAlerts = $false
+  $wb = $app.Workbooks.Open($env:CONV_SRC, 0, $true)
+  try { $wb.ExportAsFixedFormat(0, $env:CONV_OUT) } finally { $wb.Close($false) }
+} finally { $app.Quit() }
+"""),
+    "powerpoint": ("PowerPoint.Application", r"""
+$ErrorActionPreference = 'Stop'
+$app = New-Object -ComObject PowerPoint.Application
+try {
+  $pres = $app.Presentations.Open($env:CONV_SRC, $true, $false, $false)
+  try { $pres.SaveAs($env:CONV_OUT, 32) } finally { $pres.Close() }
+} finally { $app.Quit() }
+"""),
+}
+_EXT_TO_MS = {
+    ".doc": "word", ".docx": "word", ".rtf": "word", ".odt": "word",
+    ".xls": "excel", ".xlsx": "excel", ".csv": "excel", ".ods": "excel",
+    ".ppt": "powerpoint", ".pptx": "powerpoint", ".odp": "powerpoint",
+}
+
+
+def _ms_office_available(kind):
+    if os.name != "nt":
+        return False
+    try:
+        import winreg
+        winreg.CloseKey(winreg.OpenKey(
+            winreg.HKEY_CLASSES_ROOT, _MS_APPS[kind][0]))
+        return True
+    except OSError:
+        return False
+
+
+def _office_via_ms(src, out_path, kind):
+    powershell = shutil.which("powershell") or "powershell"
+    env = dict(os.environ, CONV_SRC=os.path.abspath(src),
+               CONV_OUT=os.path.abspath(out_path))
+    try:
+        proc = subprocess.run(
+            [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass",
+             "-Command", _MS_APPS[kind][1]],
+            capture_output=True, text=True, timeout=300, env=env,
+            creationflags=0x08000000)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Microsoft Office не відповів за 5 хвилин.")
+    if proc.returncode != 0 or not os.path.isfile(out_path):
+        raise RuntimeError(
+            "Microsoft Office не зміг конвертувати файл. "
+            + (proc.stderr or proc.stdout or "").strip()[-300:])
+
+
+def _office_via_libreoffice(src, out_path):
     soffice = find_soffice()
-    if not soffice:
-        raise RuntimeError(LIBREOFFICE_HINT)
     with tempfile.TemporaryDirectory() as tmp:
         profile = os.path.join(tmp, "profile")
         outdir = os.path.join(tmp, "out")
@@ -80,7 +149,24 @@ def office_to_pdf(src, out_path, **_):
             msg = (proc.stderr or proc.stdout or "").strip()[-300:]
             raise RuntimeError(f"LibreOffice не зміг конвертувати файл. {msg}")
         shutil.move(produced[0], out_path)
-    return [out_path]
+
+
+def office_to_pdf(src, out_path, **_):
+    """Word/Excel/PowerPoint -> PDF. Порядок: Microsoft Office (якщо є на
+    Windows) -> LibreOffice. Якщо перший варіант не вдався, а LibreOffice є,
+    пробуємо його."""
+    kind = _EXT_TO_MS.get(os.path.splitext(src)[1].lower())
+    errors = []
+    if kind and _ms_office_available(kind):
+        try:
+            _office_via_ms(src, out_path, kind)
+            return [out_path]
+        except RuntimeError as e:
+            errors.append(str(e))
+    if find_soffice():
+        _office_via_libreoffice(src, out_path)
+        return [out_path]
+    raise RuntimeError(("\n".join(errors) + "\n" if errors else "") + OFFICE_HINT)
 
 
 # ----------------------------------------------------------------- PDF -> --
