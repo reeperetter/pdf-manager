@@ -200,11 +200,6 @@ class PDFImageToPdfWidget(QtWidgets.QWidget):
         # перемикав режим (один файл / декілька), поле не очищалось і
         # лишало шлях від попереднього режиму (наприклад, вибрану папку,
         # коли насправді вже обрано "один PDF").
-        self.out_hint = QtWidgets.QLabel()
-        self.out_hint.setObjectName("MutedLabel")
-        self.out_hint.setWordWrap(True)
-        self.radio_combined.toggled.connect(self._update_out_hint)
-        right_layout.addWidget(self.out_hint)
 
         # ---- Прогрес + запуск/скасування ----
         self.status_label = QtWidgets.QLabel("Готово")
@@ -248,7 +243,6 @@ class PDFImageToPdfWidget(QtWidgets.QWidget):
 
         QtWidgets.QShortcut(QtGui.QKeySequence("Ctrl+O"), self, self.add_images)
 
-        self._update_out_hint()
 
     # --------------------------------------------------------- список --
     def append_images(self, paths):
@@ -343,17 +337,7 @@ class PDFImageToPdfWidget(QtWidgets.QWidget):
         self.on_selection_changed(self.list_widget.currentRow())
 
     # --------------------------------------------------------- режим --
-    def _update_out_hint(self):
-        if self.radio_combined.isChecked():
-            self.out_hint.setText(
-                "Натискання «Конвертувати у PDF» одразу запропонує вибрати "
-                "файл .pdf для збереження.")
-        else:
-            self.out_hint.setText(
-                "Натискання «Конвертувати у PDF» одразу запропонує вибрати "
-                "папку - по одному PDF-файлу на кожне зображення.")
 
-    # ----------------------------------------------------- конвертація --
     def start_conversion(self):
         if not self.image_paths:
             QtWidgets.QMessageBox.warning(self, "Помилка", "Список зображень порожній!")

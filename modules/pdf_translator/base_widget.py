@@ -102,10 +102,11 @@ class PdfBatchToolBase(QtWidgets.QWidget):
     SETTINGS_PREFIX = "tool"
     COMMON_GROUP_TITLE = "Розпізнавання"
     EXPORT_ORIGINAL_TEXT = False
-    # Чи показувати DPI та "Виправляти викривлення". Вкладка перекладу їх
-    # ховає й завжди працює з DPI 300 без розпрямлення.
+    # Чи показувати "Виправляти викривлення". Вкладка перекладу його ховає
+    # й працює без розпрямлення. DPI вибору немає: рендер завжди з
+    # максимальною якістю (MAX_DPI).
     SHOW_RENDER_OPTIONS = True
-    DEFAULT_DPI = 300
+    MAX_DPI = 600
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -194,21 +195,15 @@ class PdfBatchToolBase(QtWidgets.QWidget):
         files_layout.addLayout(btns)
         btn_add_files = QtWidgets.QPushButton("Додати файли...")
         btn_add_files.clicked.connect(self.add_files)
-        btn_add_folder = QtWidgets.QPushButton("Додати папку...")
-        btn_add_folder.clicked.connect(self.add_folder)
         self.btn_recent = QtWidgets.QPushButton("Нещодавні")
         self.recent_menu = QtWidgets.QMenu(self.btn_recent)
         self.recent_menu.aboutToShow.connect(self._populate_recent_menu)
         self.btn_recent.setMenu(self.recent_menu)
         btns.addWidget(btn_add_files)
-        btns.addWidget(btn_add_folder)
         btns.addWidget(self.btn_recent)
         btns.addSpacing(6)
-        btn_remove = QtWidgets.QPushButton("Видалити вибране")
-        btn_remove.clicked.connect(self.remove_selected)
         btn_clear = QtWidgets.QPushButton("Очистити список")
         btn_clear.clicked.connect(self.clear_files)
-        btns.addWidget(btn_remove)
         btns.addWidget(btn_clear)
         btns.addStretch(1)
 
@@ -256,14 +251,6 @@ class PdfBatchToolBase(QtWidgets.QWidget):
         self.src_lang_combo.addItem("Англійська", "eng")
         opts_layout.addWidget(self.src_lang_combo, 0, 1, 1, 2)
 
-        self.dpi_label = QtWidgets.QLabel("DPI:")
-        opts_layout.addWidget(self.dpi_label, 1, 0)
-        self.dpi_spin = QtWidgets.QSpinBox()
-        self.dpi_spin.setRange(150, 600)
-        self.dpi_spin.setSingleStep(50)
-        self.dpi_spin.setValue(self.DEFAULT_DPI)
-        opts_layout.addWidget(self.dpi_spin, 1, 1, 1, 2)
-
         opts_layout.addWidget(QtWidgets.QLabel("Шрифт:"), 2, 0)
         self.font_edit = QtWidgets.QLineEdit()
         self.font_edit.setPlaceholderText("типово - вбудований DejaVu Sans")
@@ -275,8 +262,7 @@ class PdfBatchToolBase(QtWidgets.QWidget):
         self.chk_dewarp = QtWidgets.QCheckBox("Виправляти викривлення сторінки")
         opts_layout.addWidget(self.chk_dewarp, 3, 0, 1, 3)
         if not self.SHOW_RENDER_OPTIONS:
-            for w in (self.dpi_label, self.dpi_spin, self.chk_dewarp):
-                w.hide()
+            self.chk_dewarp.hide()
 
         # ---- Результат: окремі файли чи один спільний ----
         grp_mode = QtWidgets.QGroupBox("Результат")
@@ -299,10 +285,6 @@ class PdfBatchToolBase(QtWidgets.QWidget):
         # Куди зберегти - питаємо при натисканні кнопки запуску нижче, і
         # одразу відповідним діалогом (папка / ім'я файлу) залежно від
         # вибору тут.
-        self.mode_hint = QtWidgets.QLabel()
-        self.mode_hint.setObjectName("MutedLabel")
-        self.mode_hint.setWordWrap(True)
-        mode_layout.addWidget(self.mode_hint)
 
         # ---- Керування ----
         grp_actions = QtWidgets.QGroupBox("Керування обробкою")
@@ -372,18 +354,8 @@ class PdfBatchToolBase(QtWidgets.QWidget):
         self._update_mode_hint()
 
     def _update_mode_hint(self):
-        separate = self.radio_separate.isChecked()
-        self.chk_skip_existing.setEnabled(separate)
-        if separate:
-            self.mode_hint.setText(
-                "Після натискання «Почати обробку» програма запитає, у яку "
-                "папку зберегти результати - по одному набору файлів на "
-                "кожен вхідний PDF.")
-        else:
-            self.mode_hint.setText(
-                "Після натискання «Почати обробку» програма запитає ім'я "
-                "файлу для збереження - усі вхідні PDF будуть зібрані в "
-                "один (за порядком у списку).")
+        # "Пропускати" має сенс лише для окремих результатів.
+        self.chk_skip_existing.setEnabled(self.radio_separate.isChecked())
 
     # --------------------------------------------- нещодавні файли --
     def _populate_recent_menu(self):
@@ -462,8 +434,6 @@ class PdfBatchToolBase(QtWidgets.QWidget):
     def _load_settings(self):
         s = self.settings
         self.src_lang_combo.setCurrentIndex(int(s.value(self._key("src_lang_index"), 0)))
-        if self.SHOW_RENDER_OPTIONS:
-            self.dpi_spin.setValue(int(s.value(self._key("dpi"), self.DEFAULT_DPI)))
         self.font_edit.setText(str(s.value(self._key("font_path"), "")))
         self.chk_skip_existing.setChecked(s.value(self._key("skip_existing"), True, type=bool))
         if self.SHOW_RENDER_OPTIONS:
@@ -478,7 +448,6 @@ class PdfBatchToolBase(QtWidgets.QWidget):
     def _save_settings(self):
         s = self.settings
         s.setValue(self._key("src_lang_index"), self.src_lang_combo.currentIndex())
-        s.setValue(self._key("dpi"), self.dpi_spin.value())
         s.setValue(self._key("font_path"), self.font_edit.text().strip())
         s.setValue(self._key("skip_existing"), self.chk_skip_existing.isChecked())
         s.setValue(self._key("dewarp"), self.chk_dewarp.isChecked())
@@ -613,7 +582,7 @@ class PdfBatchToolBase(QtWidgets.QWidget):
             files=list(self.files),
             combined=combined,
             out_target=out_target,
-            dpi=self.dpi_spin.value() if self.SHOW_RENDER_OPTIONS else self.DEFAULT_DPI,
+            dpi=self.MAX_DPI,
             font_path=self.font_edit.text().strip() or None,
             source_lang=self.src_lang_combo.currentData(),
             dewarp=dewarp,
