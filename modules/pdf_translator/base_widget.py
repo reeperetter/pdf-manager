@@ -27,6 +27,7 @@ from .pdf_pipeline import (
     _process_pdf_core,
     process_pdf,
 )
+from .languages import LANGUAGES
 from .tesseract_installer import ensure_tesseract_available, ensure_language_data
 
 SETTINGS_ORG = "pdf-ocr-translator"
@@ -247,8 +248,8 @@ class PdfBatchToolBase(QtWidgets.QWidget):
         self.src_lang_combo = QtWidgets.QComboBox()
         self.src_lang_combo.addItem("Автовизначення", "auto")
         self.src_lang_combo.addItem("Українська + Англійська (змішаний)", "ukr+eng")
-        self.src_lang_combo.addItem("Українська", "ukr")
-        self.src_lang_combo.addItem("Англійська", "eng")
+        for lang in LANGUAGES:
+            self.src_lang_combo.addItem(lang.name, lang.tess)
         opts_layout.addWidget(self.src_lang_combo, 0, 1, 1, 2)
 
         opts_layout.addWidget(QtWidgets.QLabel("Шрифт:"), 2, 0)

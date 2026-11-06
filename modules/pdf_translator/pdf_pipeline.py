@@ -17,6 +17,7 @@ import fitz  # PyMuPDF
 from deep_translator import DeeplTranslator, MyMemoryTranslator
 from PIL import Image, ImageOps
 
+from .languages import locale_for
 from .ocr import (detect_and_fix_orientation, dewarp_page_image,
                  ocr_lines_from_image)
 
@@ -323,19 +324,8 @@ def translate_batch_microsoft(lines_list, target_lang="uk", source_lang="auto", 
     # ISO-коди ("en", "uk", ...). Мапа повинна покривати ОБИДВА формати,
     # інакше MyMemory відповідає "No support for the provided language"
     # і переклад мовчки пропускається (файл зберігається неперекладеним).
-    lang_map = {
-        "uk": "uk-UA", "ukr": "uk-UA",
-        "en": "en-US", "eng": "en-US",
-        "de": "de-DE", "deu": "de-DE", "ger": "de-DE",
-        "fr": "fr-FR", "fra": "fr-FR", "fre": "fr-FR",
-        "es": "es-ES", "spa": "es-ES",
-        "it": "it-IT", "ita": "it-IT",
-        "pl": "pl-PL", "pol": "pl-PL",
-        "ru": "ru-RU", "rus": "ru-RU",
-    }
-
-    tgt = lang_map.get(target_lang, target_lang)
-    src = lang_map.get(actual_source, actual_source)
+    tgt = locale_for(target_lang) or target_lang
+    src = locale_for(actual_source) or actual_source
 
     try:
         translator = MyMemoryTranslator(source=src, target=tgt)
