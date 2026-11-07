@@ -9,12 +9,14 @@ import contextlib
 import glob
 import os
 import shutil
+import sys
 import time
 
 import pytesseract
 from PIL import Image, ImageOps
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 
 
 def _refresh_path_from_registry():
@@ -113,22 +115,25 @@ def _external_tesseract_env():
 def find_tesseract_cmd():
     """Шукає бінарник tesseract.
 
-    Порядок пошуку зроблено з розрахунком на майбутню портативну збірку
-    (exe + папка поруч): 1) бандлений бінарник у підпапці "tesseract" поруч
-    зі скриптом (саме туди ляже tesseract.exe/tesseract при пакуванні для
-    розповсюдження — тоді користувачам не треба нічого встановлювати
-    окремо); 2) системний tesseract з PATH (типовий сценарій під час
+    Порядок пошуку: 1) портативний Tesseract у теці "tesseract" поруч з
+    PDFManager.exe (його кладе збірка - користувачам нічого не треба
+    встановлювати); 2) системний tesseract з PATH (типовий сценарій під час
     розробки на Linux: `sudo apt install tesseract-ocr tesseract-ocr-ukr
     tesseract-ocr-rus`); 3) типові шляхи встановлення на Windows, де
     інсталятор не завжди дописує програму в PATH."""
-    bundled_dir = os.path.join(SCRIPT_DIR, "tesseract")
-    bundled_bin = os.path.join(
-        bundled_dir, "tesseract.exe" if os.name == "nt" else "tesseract")
-    if os.path.isfile(bundled_bin):
-        tessdata = os.path.join(bundled_dir, "tessdata")
-        if os.path.isdir(tessdata):
-            os.environ["TESSDATA_PREFIX"] = tessdata
-        return bundled_bin
+    exe_name = "tesseract.exe" if os.name == "nt" else "tesseract"
+    # Портативна збірка: тека "tesseract" ПОРЯД з PDFManager.exe (її кладе
+    # build.yml), а також (для сумісності) поруч зі скриптом.
+    exe_dir = (os.path.dirname(os.path.abspath(sys.executable))
+               if getattr(sys, "frozen", False) else _PROJECT_ROOT)
+    for bundled_dir in (os.path.join(exe_dir, "tesseract"),
+                        os.path.join(SCRIPT_DIR, "tesseract")):
+        bundled_bin = os.path.join(bundled_dir, exe_name)
+        if os.path.isfile(bundled_bin):
+            tessdata = os.path.join(bundled_dir, "tessdata")
+            if os.path.isdir(tessdata):
+                os.environ["TESSDATA_PREFIX"] = tessdata
+            return bundled_bin
 
     if os.name == "nt":
         # winget міг дописати PATH ПІСЛЯ старту цього процесу - без цього

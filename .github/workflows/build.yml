@@ -138,6 +138,35 @@ jobs:
             --collect-all ctranslate2 --collect-all sentencepiece \
             main.py
 
+      # Портативний Tesseract (eng/osd + ukr/rus) кладемо ПОРЯД з exe, у
+      # теку tesseract: ocr.py шукає його першим, тож у користувача (і з
+      # обмеженими правами) не потрібні ні winget, ні права адміністратора.
+      # Chocolatey встановлює збірку UB-Mannheim без прив'язки до URL
+      # конкретної версії. Зайві утиліти (навчання моделей) видаляємо.
+      - name: Bundle portable Tesseract (Windows)
+        if: steps.check.outputs.run == 'true' && matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          choco install tesseract -y --no-progress
+          $src = "C:\Program Files\Tesseract-OCR"
+          if (-not (Test-Path "$src\tesseract.exe")) { throw "Tesseract не встановився" }
+          $dst = "dist\PDFManager\tesseract"
+          New-Item -ItemType Directory -Force $dst | Out-Null
+          Copy-Item "$src\*" $dst -Recurse -Force
+          Get-ChildItem $dst -Filter *.exe | Where-Object { $_.Name -ne "tesseract.exe" } | Remove-Item -Force
+          Remove-Item "$dst\doc" -Recurse -Force -ErrorAction SilentlyContinue
+          foreach ($l in "eng","osd","ukr","rus") {
+            $f = "$dst\tessdata\$l.traineddata"
+            if (-not (Test-Path $f)) {
+              Invoke-WebRequest "https://github.com/tesseract-ocr/tessdata_fast/raw/main/$l.traineddata" -OutFile $f
+            }
+          }
+          $langs = & "$dst\tesseract.exe" --list-langs 2>&1 | Out-String
+          Write-Host $langs
+          foreach ($l in "eng","osd","ukr","rus") {
+            if ($langs -notmatch "(?m)^$l\s*$") { throw "Немає мовної моделі $l" }
+          }
+
       # Тека для мовної моделі перекладу ПОРЯД зі збіркою (портативно, без
       # запису в профіль користувача). Саму модель (~600 МБ) програма
       # завантажує при першому перекладі; ліцензія ваг NLLB некомерційна,
