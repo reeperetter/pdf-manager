@@ -4,7 +4,7 @@
 окремого текстового файлу (DOCX/TXT).
 
 Сам рушій розпізнавання (Tesseract) та розпрямлення сторінок - у ocr.py.
-Переклад виконується онлайн через незалежні сервіси (MyMemory / DeepL).
+Переклад виконується офлайн моделлю NLLB-200 (див. nllb.py).
 """
 import gc
 import io
@@ -14,10 +14,10 @@ import time
 
 import docx as _docx_module
 import fitz  # PyMuPDF
-from deep_translator import DeeplTranslator, MyMemoryTranslator
 from PIL import Image, ImageOps
 
-from .languages import locale_for
+from .languages import nllb_for
+from . import nllb
 from .ocr import (detect_and_fix_orientation, dewarp_page_image,
                  ocr_lines_from_image)
 
@@ -290,76 +290,36 @@ def detect_text_language(text):
     return "en"
 
 
-def translate_batch_microsoft(lines_list, target_lang="uk", source_lang="auto", log_fn=None, cancel_event=None, deepl_api_key=None):
-    """
-    Онлайн-переклад через MyMemory або DeepL.
-    Автоматично замінює 'auto' на визначений ISO-код перед відправкою у MyMemory.
+def translate_lines(lines_list, target_lang="uk", source_lang="auto", log_fn=None, cancel_event=None):
+    """Офлайн-переклад рядків моделлю NLLB-200.
+
+    source_lang: 'auto', код Tesseract ('ukr'), ISO ('uk') або комбінація
+    ('ukr+eng') - у двох останніх випадках мову визначаємо локально за
+    текстом. Повертає список тієї ж довжини; порожні рядки лишаються
+    порожніми.
     """
     if not lines_list:
         return []
-
     if cancel_event and cancel_event.is_set():
         raise ProcessingCancelled()
 
-    # 1. Якщо передано DeepL — він підтримує 'auto'
-    if deepl_api_key:
-        try:
-            translator = DeeplTranslator(api_key=deepl_api_key, source=source_lang, target=target_lang, use_free_api=True)
-            return [translator.translate(line) if line.strip() else "" for line in lines_list]
-        except Exception as e:
-            if log_fn:
-                log_fn(f"  [!] DeepL помилка: {e}. Перехід на MyMemory...")
-
-    # 2. Якщо source_lang == 'auto' або це комбінація кількох мов Tesseract
-    #    (наприклад "ukr+eng"), однозначного коду немає - визначаємо мову
-    #    локально за текстом.
     actual_source = source_lang
-    if actual_source == "auto" or (actual_source and "+" in actual_source):
-        sample_text = " ".join([l.strip() for l in lines_list if l.strip()][:5])
-        actual_source = detect_text_language(sample_text)
+    if not actual_source or actual_source == "auto" or "+" in actual_source:
+        sample = " ".join(l.strip() for l in lines_list if l.strip())[:600]
+        actual_source = detect_text_language(sample)
 
-    # Мапінг кодів під вимоги MyMemory (потрібні повні локалі, напр. "uk-UA").
-    # Комбобокс вибору мови в gui.py віддає 3-літерні коди Tesseract
-    # ("eng", "ukr", ...), а detect_text_language/langdetect - короткі
-    # ISO-коди ("en", "uk", ...). Мапа повинна покривати ОБИДВА формати,
-    # інакше MyMemory відповідає "No support for the provided language"
-    # і переклад мовчки пропускається (файл зберігається неперекладеним).
-    tgt = locale_for(target_lang) or target_lang
-    src = locale_for(actual_source) or actual_source
-
-    try:
-        translator = MyMemoryTranslator(source=src, target=tgt)
-        translated_lines = []
-
-        for line in lines_list:
-            if cancel_event and cancel_event.is_set():
-                raise ProcessingCancelled()
-
-            text = line.strip()
-            if not text:
-                translated_lines.append("")
-                continue
-
-            interruptible_sleep(0.1, cancel_event=cancel_event)
-
-            try:
-                res = translator.translate(text)
-                if res and "INVALID SOURCE LANGUAGE" in str(res).upper():
-                    translated_lines.append(text)
-                else:
-                    translated_lines.append(res if res else text)
-            except Exception as item_err:
-                if log_fn:
-                    log_fn(f"  [!] Помилка рядка: {item_err}")
-                translated_lines.append(text)
-
-        return translated_lines
-
-    except Exception as e:
+    tgt = nllb_for(target_lang)
+    src = nllb_for(actual_source)
+    if not tgt:
+        raise RuntimeError(f"Мова перекладу '{target_lang}' не підтримується.")
+    if not src:
         if log_fn:
-            log_fn(f"  [!] MyMemory Помилка: {e}")
+            log_fn(f"  [!] Мову оригіналу '{actual_source}' не розпізнано, "
+                   "беру англійську.")
+        src = nllb_for("en")
 
-    return lines_list
+    return nllb.get_translator().translate(
+        lines_list, src, tgt, cancel_event=cancel_event)
 
 
 def _write_txt_file(path, page_texts):
@@ -434,15 +394,16 @@ def translate_with_glossary(texts, glossary, **kwargs):
 
     Перед відправкою в перекладач кожен термін (без урахування регістру, як
     окреме слово/фразу) підміняється нейтральним маркером QZX<n>QZ, який
-    перекладачі зазвичай не чіпають, а після отримання перекладу маркер
-    замінюється назад на оригінальний фрагмент. Якщо перекладач зіпсував
-    маркер, рядок лишається неперекладеним - так термін гарантовано не
-    буде спотворено.
+    модель зазвичай не чіпає, а після отримання перекладу маркер
+    замінюється назад на оригінальний фрагмент. Рядок, де модель маркер
+    зіпсувала, перекладається ще раз без захисту (глосарій у ньому тоді
+    не гарантується), а якщо рядок складається лише з терміна, він
+    лишається як є.
     """
     terms = sorted({t.strip() for t in (glossary or ()) if t and t.strip()},
                    key=len, reverse=True)
     if not terms:
-        return translate_batch_microsoft(texts, **kwargs)
+        return translate_lines(texts, **kwargs)
 
     pattern = re.compile(
         r"(?<!\w)(?:" + "|".join(re.escape(t) for t in terms) + r")(?!\w)",
@@ -459,10 +420,10 @@ def translate_with_glossary(texts, glossary, **kwargs):
         protected.append(pattern.sub(_sub, text))
         originals.append(found)
 
-    translated = translate_batch_microsoft(protected, **kwargs)
+    translated = translate_lines(protected, **kwargs)
 
-    result = []
-    for text, tr, found in zip(texts, translated, originals):
+    result, retry = [], []
+    for n, (text, tr, found) in enumerate(zip(texts, translated, originals)):
         if not found:
             result.append(tr)
             continue
@@ -471,12 +432,23 @@ def translate_with_glossary(texts, glossary, **kwargs):
                  for i in range(len(found)))
         if not ok:
             result.append(text)
+            retry.append(n)
             continue
         for i, original in enumerate(found):
             tr = re.sub(rf"QZX{i}QZ", lambda _m, o=original: o, tr,
                         flags=re.IGNORECASE)
         result.append(tr)
+
+    # Рядки зі зіпсованими маркерами: переклад без захисту термінів, крім
+    # випадку, коли весь рядок і є терміном.
+    retry = [n for n in retry
+             if not pattern.fullmatch(texts[n].strip())]
+    if retry:
+        again = translate_lines([texts[n] for n in retry], **kwargs)
+        for n, tr in zip(retry, again):
+            result[n] = tr
     return result
+
 
 def _process_pdf_core(
     input_path,
@@ -494,7 +466,6 @@ def _process_pdf_core(
     dewarp=False,
     collect_text=False,
     source_lang="auto",
-    deepl_api_key=None,
 ):
     """Розпізнає/перекладає один PDF і повертає PdfProcessResult (у пам'яті)."""
     export_text_formats = {"txt"} if collect_text else set()
@@ -611,7 +582,7 @@ def _process_pdf_core(
                         translated_lines = translate_with_glossary(
                             raw_texts, glossary, target_lang=lang,
                             source_lang=source_lang, log_fn=log_fn,
-                            cancel_event=cancel_event, deepl_api_key=deepl_api_key
+                            cancel_event=cancel_event
                         )
                         translations[lang] = translated_lines
 

@@ -29,6 +29,7 @@ from .pdf_pipeline import (
 )
 from .languages import LANGUAGES
 from .tesseract_installer import ensure_tesseract_available, ensure_language_data
+from .nllb_installer import ensure_translation_model
 
 SETTINGS_ORG = "pdf-ocr-translator"
 SETTINGS_APP = "PDFManager"
@@ -539,6 +540,9 @@ class PdfBatchToolBase(QtWidgets.QWidget):
             return
 
         if not ensure_language_data(self, self.src_lang_combo.currentData()):
+            return
+
+        if task.get("translate_targets") and not ensure_translation_model(self):
             return
 
         dewarp = self.SHOW_RENDER_OPTIONS and self.chk_dewarp.isChecked()

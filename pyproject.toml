@@ -1,11 +1,11 @@
 [project]
 name = "pdf-ocr-translator"
 version = "1.0.0"
-description = "OCR + переклад PDF (Tesseract, PyQt5, uk/ru/en)"
+description = "OCR + офлайн-переклад PDF (Tesseract, NLLB-200, PyQt5)"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "deep-translator>=1.11.4",
+    "ctranslate2>=4.0,<5",
     "googletrans==4.0.0rc1",
     "js2py>=0.74",
     "langdetect>=1.0.9",
@@ -17,6 +17,7 @@ dependencies = [
     "pymupdf>=1.28.0",
     "pyqt5>=5.15.11",
     "pytesseract>=0.3.13",
+    "sentencepiece>=0.2.0,<0.3",
     "python-docx>=1.1.0",
     "python-pptx>=1.0",
     "requests>=2.34.2",

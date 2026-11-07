@@ -117,6 +117,7 @@ jobs:
             --add-data "PDFManager.ico;." `
             --add-data "DejaVuSans.ttf;modules/pdf_translator" `
             --add-data "modules/pdf_translator/installers;modules/pdf_translator/installers" `
+            --collect-all ctranslate2 --collect-all sentencepiece `
             main.py
 
       # ---- Збірка для Linux (тека з бінарником, не --onefile) ----
@@ -134,7 +135,19 @@ jobs:
             --add-data "PDFManager.ico:." \
             --add-data "DejaVuSans.ttf:modules/pdf_translator" \
             --add-data "modules/pdf_translator/installers:modules/pdf_translator/installers" \
+            --collect-all ctranslate2 --collect-all sentencepiece \
             main.py
+
+      # Тека для мовної моделі перекладу ПОРЯД зі збіркою (портативно, без
+      # запису в профіль користувача). Саму модель (~600 МБ) програма
+      # завантажує при першому перекладі; ліцензія ваг NLLB некомерційна,
+      # тому в архів вона не входить.
+      - name: Prepare models folder
+        if: steps.check.outputs.run == 'true'
+        shell: bash
+        run: |
+          mkdir -p dist/PDFManager/models
+          cp models-README.txt dist/PDFManager/models/README.txt
 
       # Швидка перевірка, що зібраний бінарник взагалі запускається і не
       # падає одразу (найчастіша проблема "заморожених" Qt-застосунків -
