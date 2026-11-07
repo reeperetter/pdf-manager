@@ -13,7 +13,7 @@
 import io
 import os
 
-import pymupdf as fitz
+import pymupdf
 from PIL import Image
 
 
@@ -61,7 +61,7 @@ def compress_pdf_file(src_path, out_path, max_dpi=150, jpeg_quality=65, progress
     """
     original_size = os.path.getsize(src_path)
 
-    doc = fitz.open(src_path)
+    doc = pymupdf.open(src_path)
     processed_xrefs = set()
     total_pages = len(doc)
 

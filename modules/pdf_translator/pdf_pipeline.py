@@ -10,10 +10,9 @@ import gc
 import io
 import re
 import os
-import time
 
 import docx as _docx_module
-import fitz  # PyMuPDF
+import pymupdf
 from PIL import Image, ImageOps
 
 from .languages import nllb_for
@@ -54,15 +53,6 @@ class ProcessingCancelled(Exception):
     pass
 
 
-def interruptible_sleep(duration, cancel_event=None, step=0.05):
-    """Виконує паузу з можливістю миттєвого переривання через cancel_event."""
-    end_time = time.time() + duration
-    while time.time() < end_time:
-        if cancel_event and cancel_event.is_set():
-            raise ProcessingCancelled()
-        time.sleep(min(step, max(0, end_time - time.time())))
-
-
 def find_unicode_font(user_path=None):
     """Повертає шлях до TTF-шрифту, що підтримує кирилицю."""
     if user_path and os.path.isfile(user_path):
@@ -99,11 +89,11 @@ def extract_lines_from_page(page):
 
 
 def line_to_rect(line, scale_x, scale_y):
-    """Перетворює bbox рядка у fitz.Rect."""
+    """Перетворює bbox рядка у pymupdf.Rect."""
     x0, y0, x1, y1 = line["bbox"]
     if line.get("page_coords"):
-        return fitz.Rect(x0, y0, x1, y1)
-    return fitz.Rect(x0 * scale_x, y0 * scale_y, x1 * scale_x, y1 * scale_y)
+        return pymupdf.Rect(x0, y0, x1, y1)
+    return pymupdf.Rect(x0 * scale_x, y0 * scale_y, x1 * scale_x, y1 * scale_y)
 
 
 def line_to_pixel_bbox(line, scale_x, scale_y):
@@ -120,9 +110,9 @@ def fit_fontsize(text, rect_width, rect_height, fontfile, max_size=None):
         max_size = max(4, rect_height * 0.85)
     size = max_size
     try:
-        font = fitz.Font(fontfile=fontfile)
+        font = pymupdf.Font(fontfile=fontfile)
     except Exception:
-        font = fitz.Font("helv")
+        font = pymupdf.Font("helv")
     while size > 4:
         width = font.text_length(text, fontsize=size)
         if width <= rect_width or size <= 4.5:
@@ -211,7 +201,7 @@ def images_to_pdf(image_paths, output_path, log_fn=None, progress_fn=None,
                   cancel_event=None, jpeg_quality=88, max_dimension=2200):
     """Збирає список зображень в один PDF."""
     assumed_dpi = 200
-    doc = fitz.open()
+    doc = pymupdf.open()
     total_before = 0
     total_after = 0
     try:
@@ -248,7 +238,7 @@ def images_to_pdf(image_paths, output_path, log_fn=None, progress_fn=None,
             else:
                 img.save(buf, format="JPEG", quality=jpeg_quality, optimize=True)
             total_after += buf.tell()
-            page.insert_image(fitz.Rect(0, 0, w_pt, h_pt),
+            page.insert_image(pymupdf.Rect(0, 0, w_pt, h_pt),
                               stream=buf.getvalue())
 
             if log_fn:
@@ -475,7 +465,7 @@ def _process_pdf_core(
     translated_page_texts = {lang: [] for lang in translate_targets}
 
     base_name = os.path.splitext(os.path.basename(input_path))[0]
-    doc = fitz.open(input_path)
+    doc = pymupdf.open(input_path)
     n_pages = doc.page_count
 
     fontfile = find_unicode_font(font_path)
@@ -483,8 +473,8 @@ def _process_pdf_core(
         doc.close()
         raise RuntimeError("Не знайдено TTF-шрифт з підтримкою кирилиці.")
 
-    out_searchable = fitz.open() if make_searchable else None
-    out_translated = {lang: fitz.open() for lang in translate_targets}
+    out_searchable = pymupdf.open() if make_searchable else None
+    out_translated = {lang: pymupdf.open() for lang in translate_targets}
 
     try:
         for page_index in range(n_pages):
@@ -559,7 +549,7 @@ def _process_pdf_core(
                         continue
                     fs = fit_fontsize(
                         line["text"], rect.width, rect.height, fontfile)
-                    baseline = fitz.Point(rect.x0, rect.y1 - 0.15 * fs)
+                    baseline = pymupdf.Point(rect.x0, rect.y1 - 0.15 * fs)
                     try:
                         sp.insert_text(
                             baseline,
@@ -610,7 +600,7 @@ def _process_pdf_core(
                             continue
                         px_bbox = line_to_pixel_bbox(line, scale_x, scale_y)
                         bg = sample_bg_color(pil_img, px_bbox)
-                        cover = fitz.Rect(rect.x0 - 1, rect.y0 - 1,
+                        cover = pymupdf.Rect(rect.x0 - 1, rect.y0 - 1,
                                           rect.x1 + 1, rect.y1 + 1)
                         tp.draw_rect(cover, color=bg, fill=bg, overlay=True)
                         to_draw.append((rect, tr_text))
@@ -620,7 +610,7 @@ def _process_pdf_core(
                             continue
                         fs = fit_fontsize(tr_text, rect.width,
                                           rect.height, fontfile)
-                        baseline = fitz.Point(rect.x0, rect.y1 - 0.15 * fs)
+                        baseline = pymupdf.Point(rect.x0, rect.y1 - 0.15 * fs)
                         try:
                             tp.insert_text(
                                 baseline,
@@ -635,7 +625,7 @@ def _process_pdf_core(
 
             del pix, pil_img, img_bytes, lines
             page = None
-            fitz.TOOLS.store_shrink(100)
+            pymupdf.TOOLS.store_shrink(100)
             gc.collect()
 
             if page_progress_fn:
@@ -717,8 +707,8 @@ class CombinedResult:
     def __init__(self, make_searchable, translate_targets, export_original_text=False):
         self.export_original_text = export_original_text
         self.translate_targets = list(translate_targets)
-        self.searchable = fitz.open() if make_searchable else None
-        self.translated = {lang: fitz.open() for lang in self.translate_targets}
+        self.searchable = pymupdf.open() if make_searchable else None
+        self.translated = {lang: pymupdf.open() for lang in self.translate_targets}
         self.original_texts = []
         self.translated_texts = {lang: [] for lang in self.translate_targets}
         self.files_added = 0

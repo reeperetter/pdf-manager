@@ -1,13 +1,13 @@
 """Логіка об'єднання PDF (без GUI)."""
 import os
 
-import pymupdf as fitz
+import pymupdf
 
 
 def page_count(path):
     """Кількість сторінок або RuntimeError (пошкоджений/захищений файл)."""
     try:
-        with fitz.open(path) as doc:
+        with pymupdf.open(path) as doc:
             if doc.needs_pass:
                 raise RuntimeError("файл захищено паролем")
             return len(doc)
@@ -24,7 +24,7 @@ def merge_pdfs(paths, out_path, bookmarks=True, progress_cb=None,
     власні закладки вихідних файлів як вкладені."""
     if not paths:
         raise RuntimeError("Немає файлів для об'єднання.")
-    out = fitz.open()
+    out = pymupdf.open()
     toc = []
     try:
         for i, src in enumerate(paths, 1):
@@ -32,7 +32,7 @@ def merge_pdfs(paths, out_path, bookmarks=True, progress_cb=None,
                 raise RuntimeError("Скасовано.")
             name = os.path.basename(src)
             try:
-                with fitz.open(src) as doc:
+                with pymupdf.open(src) as doc:
                     if doc.needs_pass:
                         raise RuntimeError("файл захищено паролем")
                     start = len(out)

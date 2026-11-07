@@ -14,7 +14,7 @@
 import os
 import sys
 
-import pymupdf as fitz
+import pymupdf
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog,
     QMessageBox, QLabel, QProgressBar, QSplitter, QLineEdit, QListWidget,
@@ -242,7 +242,7 @@ class PDFBatchRotatorWidget(QWidget):
             self.doc.close()
 
         file_path = self.file_list_paths[index]
-        self.doc = fitz.open(file_path)
+        self.doc = pymupdf.open(file_path)
         self.current_page_idx = 0
         self.show_page(self.current_page_idx)
 
@@ -274,7 +274,7 @@ class PDFBatchRotatorWidget(QWidget):
         if offset:
             page.set_rotation(effective_rotation)
 
-        matrix = fitz.Matrix(self.scale_factor, self.scale_factor)
+        matrix = pymupdf.Matrix(self.scale_factor, self.scale_factor)
         pix = page.get_pixmap(matrix=matrix)
 
         image = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888)
@@ -392,7 +392,7 @@ class PDFBatchRotatorWidget(QWidget):
             rotation = self.file_rotations.get(file_path, 0)
 
             try:
-                src_doc = fitz.open(file_path)
+                src_doc = pymupdf.open(file_path)
                 if rotation:
                     for page in src_doc:
                         page.set_rotation((page.rotation + rotation) % 360)

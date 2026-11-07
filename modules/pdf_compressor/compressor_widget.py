@@ -1,7 +1,7 @@
 import os
 import sys
 
-import pymupdf as fitz
+import pymupdf
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog,
     QMessageBox, QLabel, QProgressBar, QSplitter, QComboBox,
@@ -266,9 +266,9 @@ class PDFBatchCompressorWidget(QWidget):
 
         file_path = self.file_list_paths[index]
         try:
-            doc = fitz.open(file_path)
+            doc = pymupdf.open(file_path)
             page = doc[0]
-            matrix = fitz.Matrix(1.3, 1.3)
+            matrix = pymupdf.Matrix(1.3, 1.3)
             pix = page.get_pixmap(matrix=matrix)
             image = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888)
             pixmap = QPixmap.fromImage(image)

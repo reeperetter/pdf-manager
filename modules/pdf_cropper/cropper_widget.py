@@ -1,6 +1,6 @@
 import os
 import sys
-import pymupdf as fitz
+import pymupdf
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog,
     QMessageBox, QLabel, QProgressBar, QSplitter,
@@ -408,7 +408,7 @@ class PDFBatchCropperWidget(QWidget):
         x2 = x1 + (rect.width() / self.scale_factor)
         y2 = y1 + (rect.height() / self.scale_factor)
 
-        self.file_crop_rects[file_path] = fitz.Rect(x1, y1, x2, y2)
+        self.file_crop_rects[file_path] = pymupdf.Rect(x1, y1, x2, y2)
         self.update_list_item_text(idx)
 
     def restore_crop_item_for_current(self):
@@ -443,7 +443,7 @@ class PDFBatchCropperWidget(QWidget):
 
         current_rect = self.file_crop_rects[curr_path]
         for i, path in enumerate(self.file_list_paths):
-            self.file_crop_rects[path] = fitz.Rect(current_rect)
+            self.file_crop_rects[path] = pymupdf.Rect(current_rect)
             self.update_list_item_text(i)
 
         QMessageBox.information(self, "Успішно", "Рамку обрізки застосовано до всіх файлів у списку!")
@@ -497,7 +497,7 @@ class PDFBatchCropperWidget(QWidget):
             self.doc.close()
 
         file_path = self.file_list_paths[index]
-        self.doc = fitz.open(file_path)
+        self.doc = pymupdf.open(file_path)
         self.current_page_idx = 0
         self.show_page(self.current_page_idx)
 
@@ -511,7 +511,7 @@ class PDFBatchCropperWidget(QWidget):
 
         page = self.doc[page_num]
 
-        matrix = fitz.Matrix(self.scale_factor, self.scale_factor)
+        matrix = pymupdf.Matrix(self.scale_factor, self.scale_factor)
         pix = page.get_pixmap(matrix=matrix)
 
         image = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888)
@@ -619,7 +619,7 @@ class PDFBatchCropperWidget(QWidget):
                 return
             if clicked is btn_apply and source_rect is not None:
                 for p in missing_paths:
-                    self.file_crop_rects[p] = fitz.Rect(source_rect)
+                    self.file_crop_rects[p] = pymupdf.Rect(source_rect)
                     self.update_list_item_text(self.file_list_paths.index(p))
 
         output_dir = QFileDialog.getExistingDirectory(self, "Виберіть папку для збереження")
@@ -665,7 +665,7 @@ class PDFBatchCropperWidget(QWidget):
                 continue
 
             try:
-                src_doc = fitz.open(file_path)
+                src_doc = pymupdf.open(file_path)
 
                 for page in src_doc:
                     # Рамка, збережена через save_current_file_crop(), задана
@@ -687,7 +687,7 @@ class PDFBatchCropperWidget(QWidget):
                     # mediabox іншої форми/орієнтації і відрізала забагато -
                     # так само, як і попередній баг із page.rect, лише тепер
                     # з протилежного боку перетворення.
-                    real_crop_rect = fitz.Rect(crop_rect_view) * page.derotation_matrix
+                    real_crop_rect = pymupdf.Rect(crop_rect_view) * page.derotation_matrix
 
                     # Та сама (числова) рамка, намальована чи застосована
                     # по ОДНОМУ файлу, у іншого файлу може трохи виходити

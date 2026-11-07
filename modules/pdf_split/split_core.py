@@ -2,7 +2,7 @@
 import os
 import re
 
-import pymupdf as fitz
+import pymupdf
 
 MODE_EACH = "each"        # кожна сторінка окремо
 MODE_EVERY_N = "every_n"  # по N сторінок
@@ -75,7 +75,7 @@ def split_pdf(src, out_dir, mode, param=None, skip_existing=True,
               cancel_event=None):
     """Розділяє один PDF. Повертає (створені_файли, пропущено: bool)."""
     stem = os.path.splitext(os.path.basename(src))[0]
-    with fitz.open(src) as doc:
+    with pymupdf.open(src) as doc:
         if doc.needs_pass:
             raise RuntimeError("файл захищено паролем")
         parts = plan_split(doc, mode, param)
@@ -93,7 +93,7 @@ def split_pdf(src, out_dir, mode, param=None, skip_existing=True,
                 target = f"{base}_{n}{ext}"
                 n += 1
             used.add(target)
-            part = fitz.open()
+            part = pymupdf.open()
             try:
                 part.insert_pdf(doc, from_page=a - 1, to_page=b - 1)
                 part.save(target, garbage=3, deflate=True)

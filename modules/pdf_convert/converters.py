@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tempfile
 
-import pymupdf as fitz
+import pymupdf
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
@@ -176,10 +176,10 @@ def pdf_to_images(src, out_path, fmt="png", dpi=200, **_):
     fmt = fmt.lower()
     zoom = dpi / 72.0
     created = []
-    with fitz.open(src) as doc:
+    with pymupdf.open(src) as doc:
         digits = max(3, len(str(len(doc))))
         for i, page in enumerate(doc, 1):
-            pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+            pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False)
             path = f"{out_path}_{i:0{digits}d}.{fmt}"
             if fmt in ("jpg", "jpeg"):
                 pix.save(path, jpg_quality=92)
@@ -191,7 +191,7 @@ def pdf_to_images(src, out_path, fmt="png", dpi=200, **_):
 
 def pdf_to_txt(src, out_path, **_):
     parts = []
-    with fitz.open(src) as doc:
+    with pymupdf.open(src) as doc:
         for page in doc:
             parts.append(page.get_text("text").rstrip())
     text = "\n\n".join(p for p in parts)
@@ -240,7 +240,7 @@ def pdf_to_xlsx(src, out_path, **_):
 
     def collect(strategy):
         found = []
-        with fitz.open(src) as doc:
+        with pymupdf.open(src) as doc:
             for pno, page in enumerate(doc, 1):
                 try:
                     tables = page.find_tables(strategy=strategy).tables
@@ -286,7 +286,7 @@ def pdf_to_pptx(src, out_path, dpi=150, **_):
     from pptx import Presentation
     from pptx.util import Emu
     prs = Presentation()
-    with fitz.open(src) as doc, tempfile.TemporaryDirectory() as tmp:
+    with pymupdf.open(src) as doc, tempfile.TemporaryDirectory() as tmp:
         if len(doc):
             r = doc[0].rect
             prs.slide_width = Emu(int(r.width * 12700))
@@ -295,7 +295,7 @@ def pdf_to_pptx(src, out_path, dpi=150, **_):
         zoom = dpi / 72.0
         for i, page in enumerate(doc, 1):
             img = os.path.join(tmp, f"p{i}.png")
-            page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False).save(img)
+            page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom), alpha=False).save(img)
             slide = prs.slides.add_slide(blank)
             slide.shapes.add_picture(img, 0, 0, prs.slide_width, prs.slide_height)
             text = page.get_text("text").strip()
@@ -319,12 +319,12 @@ def _read_text(path):
 def txt_to_pdf(src, out_path, fontsize=11, **_):
     text = _read_text(src).replace("\t", "    ")
     if FONT_PATH:
-        font = fitz.Font(fontfile=FONT_PATH)
+        font = pymupdf.Font(fontfile=FONT_PATH)
         fontname = "body"
     else:
-        font = fitz.Font("helv")
+        font = pymupdf.Font("helv")
         fontname = "helv"
-    width, height = fitz.paper_size("a4")
+    width, height = pymupdf.paper_size("a4")
     margin = 56
     max_w = width - 2 * margin
     line_h = fontsize * 1.35
@@ -353,7 +353,7 @@ def txt_to_pdf(src, out_path, fontsize=11, **_):
         lines.append(current)
 
     per_page = max(1, int((height - 2 * margin) // line_h))
-    doc = fitz.open()
+    doc = pymupdf.open()
     try:
         for start in range(0, max(len(lines), 1), per_page):
             page = doc.new_page(width=width, height=height)
