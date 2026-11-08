@@ -321,7 +321,6 @@ _MIN_TRAINEDDATA_BYTES = 100 * 1024
 def _download_traineddata(lang, dst, cancel_event=None, byte_cb=None):
     """Качає {lang}.traineddata у dst; перевіряє розмір і що це не
     HTML-сторінка помилки (мережеві фільтри/проксі)."""
-    import shutil
     import urllib.request
 
     url = _TESSDATA_FAST_URL.format(lang=lang)

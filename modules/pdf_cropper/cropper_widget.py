@@ -5,13 +5,12 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog,
     QMessageBox, QLabel, QProgressBar, QSplitter,
     QLineEdit, QShortcut, QGraphicsScene, QGraphicsView,
-    QGraphicsRectItem, QGraphicsItem, QGraphicsTextItem,
-    QGraphicsPixmapItem, QListWidget, QListWidgetItem, QStyle
+    QGraphicsRectItem, QGraphicsPixmapItem, QStyle
 )
-from PyQt5.QtCore import Qt, QRectF, QPointF, QSize
+from PyQt5.QtCore import Qt, QRectF, QPointF
 from PyQt5.QtGui import (
     QPen, QBrush, QColor, QCursor, QPixmap, QImage,
-    QKeySequence, QTransform, QIcon
+    QKeySequence, QTransform
 )
 
 from theme import accent_qcolor, COLORS

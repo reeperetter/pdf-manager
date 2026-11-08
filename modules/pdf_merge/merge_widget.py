@@ -2,7 +2,7 @@
 import os
 import threading
 
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt5 import QtCore, QtWidgets
 
 from ui_batch_extras import BatchExtras
 from .merge_core import merge_pdfs, page_count

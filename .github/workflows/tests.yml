@@ -1,0 +1,45 @@
+name: Tests
+
+# Швидка перевірка якості на кожен push/PR: ruff + pytest (offscreen Qt).
+# Окремо від build.yml, щоб помилку було видно за хвилини, не чекаючи збірки.
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Configure uv to use system Python
+        run: echo "UV_PYTHON_PREFERENCE=only-system" >> "$GITHUB_ENV"
+
+      - name: Install Qt runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgl1 libegl1 libxkbcommon-x11-0 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Ruff
+        run: uv run ruff check .
+
+      - name: Pytest
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: uv run pytest -q

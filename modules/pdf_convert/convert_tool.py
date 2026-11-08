@@ -11,7 +11,7 @@ import os
 import threading
 from dataclasses import dataclass, field
 
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt5 import QtCore, QtWidgets
 
 from ui_batch_extras import BatchExtras
 

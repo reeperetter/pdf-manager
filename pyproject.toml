@@ -38,3 +38,22 @@ required-environments = [
     "sys_platform == 'win32' and platform_machine == 'AMD64'",
     "sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 120
+extend-exclude = [".venv", "build", "dist"]
+
+[tool.ruff.lint]
+# E/F - помилки й невикористані імпорти; без стилістичних придирок.
+select = ["E", "F"]
+ignore = ["E731", "E501", "E701", "E702", "E741"]

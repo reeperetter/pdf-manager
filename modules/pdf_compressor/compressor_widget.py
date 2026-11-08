@@ -5,10 +5,10 @@ import pymupdf
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog,
     QMessageBox, QLabel, QProgressBar, QSplitter, QComboBox,
-    QLineEdit, QGroupBox, QSpinBox, QListWidget, QListWidgetItem, QStyle,
+    QLineEdit, QGroupBox, QSpinBox, QListWidgetItem, QStyle,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView
 )
-from PyQt5.QtCore import Qt, QSize
+from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QPixmap, QImage
 
 from modules.pdf_compressor.compressor_core import (

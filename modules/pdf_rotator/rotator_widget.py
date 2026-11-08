@@ -17,8 +17,7 @@ import sys
 import pymupdf
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QFileDialog,
-    QMessageBox, QLabel, QProgressBar, QSplitter, QLineEdit, QListWidget,
-    QGraphicsScene, QGraphicsView, QGraphicsPixmapItem, QStyle
+    QMessageBox, QLabel, QProgressBar, QSplitter, QLineEdit, QGraphicsScene, QGraphicsView, QGraphicsPixmapItem, QStyle
 )
 from PyQt5.QtCore import Qt, QRectF
 from PyQt5.QtGui import QBrush, QColor, QPixmap, QImage, QTransform
