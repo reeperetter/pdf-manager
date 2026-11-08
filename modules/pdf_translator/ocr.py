@@ -315,12 +315,54 @@ def use_user_tessdata():
         os.environ["TESSDATA_PREFIX"] = USER_TESSDATA_ROOT
 
 
-def install_language_data(langs, progress_cb=None):
-    """Кладе моделі в користувацьку теку: беремо вже наявні поруч із
-    встановленим Tesseract (eng, osd), решту докачуємо з tessdata_fast.
-    Піднімає RuntimeError з зрозумілим текстом при помилці мережі."""
+_MIN_TRAINEDDATA_BYTES = 100 * 1024
+
+
+def _download_traineddata(lang, dst, cancel_event=None, byte_cb=None):
+    """Качає {lang}.traineddata у dst; перевіряє розмір і що це не
+    HTML-сторінка помилки (мережеві фільтри/проксі)."""
     import shutil
     import urllib.request
+
+    url = _TESSDATA_FAST_URL.format(lang=lang)
+    tmp = dst + ".part"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "PDFManager"})
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            expected = int(resp.headers.get("Content-Length") or 0)
+            got = 0
+            with open(tmp, "wb") as f:
+                while True:
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise RuntimeError("Скасовано користувачем.")
+                    chunk = resp.read(256 * 1024)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    got += len(chunk)
+                    if byte_cb:
+                        byte_cb(got, expected)
+        size = os.path.getsize(tmp)
+        if expected and size != expected:
+            raise RuntimeError(f"розмір {size} замість {expected} байт")
+        with open(tmp, "rb") as f:
+            head = f.read(64)
+        if size < _MIN_TRAINEDDATA_BYTES or head.lstrip().startswith(b"<"):
+            raise RuntimeError("отримано некоректний файл (не traineddata)")
+        os.replace(tmp, dst)
+    except Exception as e:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise RuntimeError(
+            f"Не вдалося завантажити мовну модель '{lang}': {e}")
+
+
+def install_language_data(langs, progress_cb=None, cancel_event=None):
+    """Кладе моделі в користувацьку теку: беремо вже наявні поруч із
+    встановленим Tesseract (eng, osd), решту докачуємо з tessdata_fast.
+    progress_cb(lang, index, total, got_bytes, expected_bytes).
+    Піднімає RuntimeError з зрозумілим текстом при помилці."""
+    import shutil
 
     sub = os.path.join(USER_TESSDATA_ROOT, "tessdata")
     os.makedirs(sub, exist_ok=True)
@@ -329,26 +371,20 @@ def install_language_data(langs, progress_cb=None):
     # разом із потрібними мовами переносимо сюди й eng та osd.
     wanted = list(dict.fromkeys(list(langs) + ["eng", "osd"]))
     for i, lang in enumerate(wanted):
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("Скасовано користувачем.")
         if progress_cb:
-            progress_cb(lang, i, len(wanted))
+            progress_cb(lang, i, len(wanted), 0, 0)
         dst = os.path.join(sub, f"{lang}.traineddata")
         if not os.path.isfile(dst):
             src = _find_traineddata(lang)
             if src and not src.startswith(USER_TESSDATA_ROOT):
                 shutil.copyfile(src, dst)
             else:
-                url = _TESSDATA_FAST_URL.format(lang=lang)
-                tmp = dst + ".part"
-                try:
-                    with urllib.request.urlopen(url, timeout=60) as resp, \
-                            open(tmp, "wb") as f:
-                        shutil.copyfileobj(resp, f)
-                    os.replace(tmp, dst)
-                except Exception as e:
-                    if os.path.exists(tmp):
-                        os.remove(tmp)
-                    raise RuntimeError(
-                        f"Не вдалося завантажити мовну модель '{lang}': {e}")
+                _download_traineddata(
+                    lang, dst, cancel_event,
+                    (lambda g, e, lang=lang, i=i: progress_cb(
+                        lang, i, len(wanted), g, e)) if progress_cb else None)
         copy2 = os.path.join(USER_TESSDATA_ROOT, f"{lang}.traineddata")
         if not os.path.isfile(copy2):
             shutil.copyfile(dst, copy2)

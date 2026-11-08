@@ -20,6 +20,7 @@ import shutil
 
 from PyQt5 import QtCore, QtWidgets
 
+from modules.common.progress_task import run_with_progress
 from . import ocr
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -224,27 +225,24 @@ def ensure_language_data(parent_widget, source_lang):
     if choice != QtWidgets.QMessageBox.Ok:
         return False
 
-    progress = QtWidgets.QProgressDialog(
-        "Завантаження мовних моделей...", None, 0, 0, parent_widget)
-    progress.setWindowTitle("Зачекайте")
-    progress.setCancelButton(None)
-    progress.setWindowModality(QtCore.Qt.WindowModal)
-    progress.setMinimumDuration(0)
-    progress.show()
-    QtWidgets.QApplication.processEvents()
+    def work(report, cancel):
+        def tick(lang, i, total, got, expected):
+            text = f"Мовна модель {lang} ({i + 1}/{total})"
+            if expected:
+                text += f": {got / 1048576:.1f} / {expected / 1048576:.1f} МБ"
+            report(i * 1000 + (1000 * got // expected if expected else 0),
+                   total * 1000, text)
+        ocr.install_language_data(
+            ocr.required_languages(source_lang), tick, cancel)
 
-    def _tick(lang, i, total):
-        progress.setLabelText(f"Завантаження мовних моделей: {lang} ({i + 1}/{total})...")
-        QtWidgets.QApplication.processEvents()
-
-    try:
-        ocr.install_language_data(ocr.required_languages(source_lang), _tick)
-    except Exception as e:
-        progress.close()
-        QtWidgets.QMessageBox.warning(
-            parent_widget, "Не вдалося завантажити", str(e))
+    _res, error, cancelled = run_with_progress(
+        parent_widget, "Завантаження мовних моделей", work)
+    if cancelled:
         return False
-    progress.close()
+    if error:
+        QtWidgets.QMessageBox.warning(
+            parent_widget, "Не вдалося завантажити", error)
+        return False
 
     if ocr.missing_languages(source_lang):
         QtWidgets.QMessageBox.warning(

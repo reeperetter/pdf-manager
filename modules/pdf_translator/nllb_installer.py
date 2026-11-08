@@ -1,8 +1,7 @@
 """Діалог завантаження моделі перекладу NLLB-200 (Qt)."""
-import threading
+from PyQt5 import QtWidgets
 
-from PyQt5 import QtCore, QtWidgets
-
+from modules.common.progress_task import run_with_progress
 from . import nllb
 
 
@@ -31,58 +30,16 @@ def ensure_translation_model(parent_widget):
     if choice != QtWidgets.QMessageBox.Ok:
         return False
 
-    state = {"done": 0, "total": 0, "name": "", "error": None, "finished": False}
-    cancel = threading.Event()
+    def work(report, cancel):
+        def on_progress(done, total, name):
+            report(done, total,
+                   f"{name}: {done / 1048576:.0f} / {total / 1048576:.0f} МБ")
+        nllb.download_model(on_progress, cancel)
 
-    def on_progress(done, total, name):
-        state["done"], state["total"], state["name"] = done, total, name
-
-    def work():
-        try:
-            nllb.download_model(on_progress, cancel)
-        except nllb.DownloadCancelled:
-            pass
-        except Exception as e:  # показуємо користувачу
-            state["error"] = str(e)
-        finally:
-            state["finished"] = True
-
-    dlg = QtWidgets.QProgressDialog(
-        "Підготовка...", "Скасувати", 0, 1000, parent_widget)
-    dlg.setWindowTitle("Завантаження моделі перекладу")
-    dlg.setWindowModality(QtCore.Qt.WindowModal)
-    dlg.setMinimumDuration(0)
-    dlg.setAutoClose(False)
-    dlg.setAutoReset(False)
-    dlg.canceled.connect(cancel.set)
-
-    thread = threading.Thread(target=work, daemon=True)
-    thread.start()
-    dlg.show()
-
-    timer = QtCore.QTimer(dlg)
-
-    def tick():
-        total = state["total"]
-        if total:
-            dlg.setValue(min(1000, int(state["done"] * 1000 / total)))
-            dlg.setLabelText(
-                f"{state['name']}: {state['done'] / 1048576:.0f} / "
-                f"{total / 1048576:.0f} МБ")
-        if state["finished"]:
-            loop.quit()
-
-    loop = QtCore.QEventLoop()
-    timer.timeout.connect(tick)
-    timer.start(150)
-    loop.exec_()
-    timer.stop()
-    thread.join()
-    dlg.canceled.disconnect(cancel.set)  # close() сам шле 'canceled'
-    dlg.close()
-
-    if state["error"]:
+    _res, error, _cancelled = run_with_progress(
+        parent_widget, "Завантаження моделі перекладу", work)
+    if error:
         QtWidgets.QMessageBox.warning(
-            parent_widget, "Не вдалося завантажити модель", state["error"])
+            parent_widget, "Не вдалося завантажити модель", error)
         return False
     return nllb.find_model() is not None
