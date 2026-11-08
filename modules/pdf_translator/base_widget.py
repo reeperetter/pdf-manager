@@ -16,8 +16,10 @@ import threading
 import time
 import traceback
 
+import pymupdf
 from PyQt5 import QtCore, QtGui, QtWidgets
 
+from modules.common.eta import EtaEstimator
 from theme import COLORS
 from ui_icons import create_vector_icon
 from .dewarp import _lazy_import_cv2
@@ -638,6 +640,23 @@ class PdfBatchToolBase(QtWidgets.QWidget):
         cancelled = False
         saved_total = []
         combined = None
+
+        # ETA рахуємо у сторінках: заздалегідь дізнаємось обсяг роботи.
+        page_counts = {}
+        for path in files:
+            try:
+                with pymupdf.open(path) as probe:
+                    page_counts[path] = max(1, len(probe))
+            except Exception:
+                page_counts[path] = 1
+        eta = EtaEstimator(sum(page_counts.values()))
+
+        def status_text(done_files):
+            text = f"Обробка: {done_files}/{total}"
+            left = (EtaEstimator.format(eta.remaining_seconds())
+                    if done_files < total else "")
+            return f"{text} · залишилось {left}" if left else text
+
         core_kwargs = dict(
             dpi=o["dpi"], make_searchable=make_searchable,
             translate_targets=translate_targets, font_path=o["font_path"],
@@ -665,12 +684,18 @@ class PdfBatchToolBase(QtWidgets.QWidget):
                     if expected and all(os.path.isfile(p) for p in expected):
                         self.log(f"=== Пропущено (уже є): {name} ===")
                         done += 1
+                        eta.skip(page_counts[path])
                         self.signals.progress.emit(done)
-                        self.signals.status.emit(f"Обробка: {done}/{total}")
+                        self.signals.status.emit(status_text(done))
                         continue
 
+                seen_pages = [0]
+
                 def page_progress_cb(page_num, n_pages):
+                    eta.advance(max(0, page_num - seen_pages[0]))
+                    seen_pages[0] = page_num
                     self.signals.page_progress.emit(page_num, n_pages)
+                    self.signals.status.emit(status_text(done))
                     time.sleep(0.001)
 
                 try:
@@ -702,7 +727,7 @@ class PdfBatchToolBase(QtWidgets.QWidget):
                     failed.append((name, str(e)))
                 done += 1
                 self.signals.progress.emit(done)
-                self.signals.status.emit(f"Обробка: {done}/{total}")
+                self.signals.status.emit(status_text(done))
 
             if combined is not None:
                 if cancelled:
