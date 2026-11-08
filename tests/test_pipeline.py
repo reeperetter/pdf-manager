@@ -4,6 +4,7 @@ import pymupdf
 from PIL import Image
 
 from modules.pdf_translator import pdf_pipeline as pp
+from modules.pdf_translator import text_translation
 
 
 def _scan_pdf(path, dpi):
@@ -51,7 +52,7 @@ def test_glossary_retry_when_marker_lost(monkeypatch):
         # перший виклик "ламає" маркер, повторний (без захисту) - ні
         return [t.replace("QZX0QZ", "") if "QZX0QZ" in t else t.upper()
                 for t in texts]
-    monkeypatch.setattr(pp, "translate_lines", fake)
+    monkeypatch.setattr(text_translation, "translate_lines", fake)
     r = pp.translate_with_glossary(["say Acme now"], {"Acme"},
                                    target_lang="uk", source_lang="en")
     assert r == ["SAY ACME NOW"] and len(calls) == 2

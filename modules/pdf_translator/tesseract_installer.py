@@ -21,7 +21,7 @@ import shutil
 from PyQt5 import QtCore, QtWidgets
 
 from modules.common.progress_task import run_with_progress
-from . import ocr
+from . import tesseract_setup as ocr
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 INSTALLERS_DIR = os.path.join(SCRIPT_DIR, "installers")

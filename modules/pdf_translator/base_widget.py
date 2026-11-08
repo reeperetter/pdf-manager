@@ -20,7 +20,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 
 from theme import COLORS
 from ui_icons import create_vector_icon
-from .ocr import _lazy_import_cv2
+from .dewarp import _lazy_import_cv2
 from .pdf_pipeline import (
     CombinedResult,
     ProcessingCancelled,

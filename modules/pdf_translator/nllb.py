@@ -347,7 +347,7 @@ class NllbTranslator:
         with self._lock:
             for b in range(0, len(order), BATCH_SIZE):
                 if cancel_event is not None and cancel_event.is_set():
-                    from .pdf_pipeline import ProcessingCancelled
+                    from .errors import ProcessingCancelled
                     raise ProcessingCancelled()
                 idx = order[b:b + BATCH_SIZE]
                 outs = self.tr.translate_batch(
