@@ -14,42 +14,11 @@ from PyQt5.QtGui import QPixmap, QImage
 from modules.pdf_compressor.compressor_core import (
     COMPRESSION_PRESETS, DEFAULT_PRESET_KEY, compress_pdf_file, format_size
 )
+from modules.common.batch_runner import BatchRunner
+from modules.common.file_list import DropFileList
+from modules.common.outputs import resolve_output_path
 from theme import apply_theme
 from ui_batch_extras import BatchExtras
-
-
-class CompressorDropListWidget(QListWidget):
-    """Список файлів з підтримкою Drag-and-Drop для модуля стиснення."""
-
-    def __init__(self, owner, parent=None):
-        super().__init__(parent)
-        self.owner = owner
-        self.setAcceptDrops(True)
-        self.setSelectionMode(QAbstractItemView.ExtendedSelection)
-
-    def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-        else:
-            super().dragEnterEvent(event)
-
-    def dragMoveEvent(self, event):
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-        else:
-            super().dragMoveEvent(event)
-
-    def dropEvent(self, event):
-        if event.mimeData().hasUrls():
-            files = [
-                url.toLocalFile() for url in event.mimeData().urls()
-                if url.toLocalFile().lower().endswith(".pdf")
-            ]
-            if files:
-                self.owner.append_files(files)
-            event.acceptProposedAction()
-        else:
-            super().dropEvent(event)
 
 
 class PDFBatchCompressorWidget(QWidget):
@@ -86,7 +55,7 @@ class PDFBatchCompressorWidget(QWidget):
         btn_clear_list.setMinimumHeight(30)
         btn_clear_list.clicked.connect(self.clear_file_list)
 
-        self.file_list_widget = CompressorDropListWidget(self, self)
+        self.file_list_widget = DropFileList(self, extended=True)
         self.file_list_widget.currentRowChanged.connect(self.on_file_selected)
 
         btn_remove_selected = QPushButton("Прибрати виділені")
@@ -186,8 +155,11 @@ class PDFBatchCompressorWidget(QWidget):
         btn_process_batch.setObjectName("BtnPrimary")
         btn_process_batch.clicked.connect(self.process_batch_compress)
 
+        self.runner = BatchRunner(self, btn_process_batch, self.progress_bar)
+
         bottom_layout.addWidget(self.progress_bar)
         bottom_layout.addWidget(self.extras.open_button)
+        bottom_layout.addWidget(self.runner.cancel_button)
         bottom_layout.addWidget(btn_process_batch)
 
         right_layout.addWidget(self.preview_label)
@@ -290,6 +262,8 @@ class PDFBatchCompressorWidget(QWidget):
                 self.on_file_selected(idx)
 
     def process_batch_compress(self):
+        if self.runner.running:
+            return
         if not self.file_list_paths:
             QMessageBox.warning(self, "Помилка", "Список файлів порожній!")
             return
@@ -301,58 +275,56 @@ class PDFBatchCompressorWidget(QWidget):
         self.extras.set_output_dir(output_dir)
         max_dpi, jpeg_quality = self.current_settings()
         suffix = self.txt_suffix.text().strip()
+        skip_existing = self.extras.skip_existing
+        used_out_paths = set()
+        paths = list(self.file_list_paths)
 
-        total_files = len(self.file_list_paths)
-        self.progress_bar.setMaximum(total_files)
-        self.progress_bar.setValue(0)
+        # Рядки таблиці створюємо наперед - у фоні лише оновлюємо значення.
         self.results_table.setRowCount(0)
-
-        total_original = 0
-        total_new = 0
-        processed_count = 0
-        failed_count = 0
-        skipped_count = 0
-
-        for idx, file_path in enumerate(self.file_list_paths):
-            filename = os.path.basename(file_path)
-            stem, ext = os.path.splitext(filename)
-            out_path = os.path.join(output_dir, f"{stem}{suffix}{ext}")
-
+        for file_path in paths:
             row = self.results_table.rowCount()
             self.results_table.insertRow(row)
-            self.results_table.setItem(row, 0, QTableWidgetItem(filename))
+            self.results_table.setItem(row, 0, QTableWidgetItem(os.path.basename(file_path)))
             self.results_table.setItem(row, 1, QTableWidgetItem(format_size(os.path.getsize(file_path))))
             self.results_table.setItem(row, 2, QTableWidgetItem("…"))
             self.results_table.setItem(row, 3, QTableWidgetItem("…"))
-            QApplication.processEvents()
 
-            if self.extras.skip_existing and os.path.exists(out_path):
-                skipped_count += 1
-                self.results_table.setItem(row, 2, QTableWidgetItem("Пропущено"))
-                self.results_table.setItem(row, 3, QTableWidgetItem("вже є"))
-                self.progress_bar.setValue(idx + 1)
-                continue
+        def work(file_path):
+            """Фоновий потік: ('exists',) або (початковий, новий розмір)."""
+            out_path = resolve_output_path(
+                output_dir, os.path.basename(file_path), suffix,
+                used_out_paths, skip_existing)
+            if out_path is None:
+                return None
+            return compress_pdf_file(
+                file_path, out_path, max_dpi=max_dpi, jpeg_quality=jpeg_quality)
 
-            try:
-                original_size, new_size = compress_pdf_file(
-                    file_path, out_path, max_dpi=max_dpi, jpeg_quality=jpeg_quality
-                )
-                total_original += original_size
-                total_new += new_size
-                processed_count += 1
+        def on_item(index, outcome):
+            if outcome.error:
+                size_txt, pct_txt = "Помилка", outcome.error[:40]
+            elif outcome.value is None:
+                size_txt, pct_txt = "Пропущено", "вже є"
+            else:
+                original_size, new_size = outcome.value
+                saved = (1 - new_size / original_size) * 100 if original_size else 0
+                size_txt, pct_txt = format_size(new_size), f"{saved:.0f}%"
+            self.results_table.setItem(index, 2, QTableWidgetItem(size_txt))
+            self.results_table.setItem(index, 3, QTableWidgetItem(pct_txt))
 
-                saved_pct = (1 - new_size / original_size) * 100 if original_size else 0
-                self.results_table.setItem(row, 2, QTableWidgetItem(format_size(new_size)))
-                self.results_table.setItem(row, 3, QTableWidgetItem(f"{saved_pct:.0f}%"))
-            except Exception as e:
-                failed_count += 1
-                self.results_table.setItem(row, 2, QTableWidgetItem("Помилка"))
-                self.results_table.setItem(row, 3, QTableWidgetItem(str(e)[:40]))
+        self.runner.start(
+            paths, work, on_item=on_item,
+            on_finished=lambda outcomes, cancelled: self._compress_finished(
+                outcomes, cancelled, output_dir))
 
-            self.progress_bar.setValue(idx + 1)
-            QApplication.processEvents()
+    def _compress_finished(self, outcomes, cancelled, output_dir):
+        done = [o.value for o in outcomes if not o.error and o.value is not None]
+        skipped_count = sum(1 for o in outcomes if not o.error and o.value is None)
+        failed_count = sum(1 for o in outcomes if o.error)
+        total_original = sum(d[0] for d in done)
+        total_new = sum(d[1] for d in done)
 
-        msg = f"Обробку завершено!\n\nОброблено файлів: {processed_count}"
+        head = "Обробку скасовано." if cancelled else "Обробку завершено!"
+        msg = f"{head}\n\nОброблено файлів: {len(done)}"
         if skipped_count:
             msg += f"\nПропущено (вже є результат): {skipped_count}"
         if failed_count:
@@ -365,7 +337,8 @@ class PDFBatchCompressorWidget(QWidget):
             )
         msg += f"\n\nФайли збережено у:\n{output_dir}"
 
-        QMessageBox.information(self, "Успішно!", msg)
+        QMessageBox.information(
+            self, "Скасовано" if cancelled else "Успішно!", msg)
 
 
 if __name__ == "__main__":

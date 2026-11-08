@@ -15,6 +15,9 @@ from PyQt5.QtGui import (
 )
 
 from theme import accent_qcolor, COLORS
+from modules.common.batch_runner import BatchRunner
+from modules.common.file_list import DropFileList
+from modules.common.outputs import resolve_output_path
 from ui_batch_extras import BatchExtras
 
 # Цей модуль відповідає ЛИШЕ за обрізку (рамку). Поворот сторінок - окремий
@@ -217,41 +220,6 @@ class PDFCropView(QGraphicsView):
         super().mouseReleaseEvent(event)
 
 
-class DropListWidget(QListWidget):
-    """Список файлів з підтримкою Drag-and-Drop."""
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setAcceptDrops(True)
-
-    def _get_cropper_widget(self):
-        parent = self.parent()
-        while parent and not isinstance(parent, PDFBatchCropperWidget):
-            parent = parent.parent()
-        return parent
-
-    def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-        else:
-            super().dragEnterEvent(event)
-
-    def dragMoveEvent(self, event):
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-        else:
-            super().dragMoveEvent(event)
-
-    def dropEvent(self, event):
-        if event.mimeData().hasUrls():
-            files = [url.toLocalFile() for url in event.mimeData().urls() if url.toLocalFile().lower().endswith('.pdf')]
-            cropper = self._get_cropper_widget()
-            if files and cropper:
-                cropper.append_files(files)
-            event.acceptProposedAction()
-        else:
-            super().dropEvent(event)
-
-
 class PDFBatchCropperWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -284,7 +252,7 @@ class PDFBatchCropperWidget(QWidget):
         btn_clear_list.setMinimumHeight(30)
         btn_clear_list.clicked.connect(self.clear_file_list)
 
-        self.file_list_widget = DropListWidget(self)
+        self.file_list_widget = DropFileList(self)
         self.file_list_widget.currentRowChanged.connect(self.on_file_selected)
 
         btn_apply_crop = QPushButton(" Застосувати рамку до всіх файлів")
@@ -359,8 +327,11 @@ class PDFBatchCropperWidget(QWidget):
         btn_process_batch.setObjectName("BtnPrimary")
         btn_process_batch.clicked.connect(self.process_batch_crop)
 
+        self.runner = BatchRunner(self, self.btn_process_batch, self.progress_bar)
+
         bottom_layout.addWidget(self.progress_bar)
         bottom_layout.addWidget(self.extras.open_button)
+        bottom_layout.addWidget(self.runner.cancel_button)
         bottom_layout.addWidget(btn_process_batch)
 
         right_layout.addLayout(nav_layout)
@@ -549,16 +520,9 @@ class PDFBatchCropperWidget(QWidget):
             self.show_page(self.current_page_idx)
 
     def process_batch_crop(self):
-        # Кнопку вимикаємо на час усієї обробки (разом із модальними
-        # діалогами вибору папки/попередження нижче) - без цього подвійний
-        # клік під час відкритого діалогу міг повторно викликати цей метод
-        # ще раз поверх першого виклику (process_batch_crop не захищений
-        # від повторного входу), що давало непередбачувану поведінку.
-        self.btn_process_batch.setEnabled(False)
-        try:
-            self._process_batch_crop_impl()
-        finally:
-            self.btn_process_batch.setEnabled(True)
+        if self.runner.running:
+            return
+        self._process_batch_crop_impl()
 
     def _process_batch_crop_impl(self):
         if not self.file_list_paths:
@@ -628,45 +592,24 @@ class PDFBatchCropperWidget(QWidget):
 
         self.extras.set_output_dir(output_dir)
         suffix = self.txt_suffix.text().strip()
-        total_files = len(self.file_list_paths)
-        self.progress_bar.setMaximum(total_files)
-        self.progress_bar.setValue(0)
+        skip_existing = self.extras.skip_existing
+        crop_rects = {p: pymupdf.Rect(r) for p, r in self.file_crop_rects.items()}
+        # Імена виходу беруться з basename(file_path): файли з однаковою
+        # назвою з різних тек не повинні перезаписувати один одного -
+        # resolve_output_path додає "_1", "_2", ... при колізії.
+        used_out_paths = set()
 
         if self.doc:
             self.doc.close()
             self.doc = None
 
-        processed_count = 0
-        skipped_count = 0
-        existing_count = 0
-        # Імена вихідних файлів беруться лише з basename(file_path). Якщо
-        # серед вхідних файлів є кілька з ОДНАКОВОЮ назвою, але з різних
-        # папок (типово для сканів/фото), усі вони писались би в один і
-        # той самий шлях output_dir/<prefix><filename> - кожен наступний
-        # мовчки перезаписував би попередній на диску. Збираємо вже
-        # використані шляхи та додаємо лічильник "_1", "_2", ... при
-        # колізії, щоб жоден оброблений файл не губився.
-        used_out_paths = set()
-
-        # Файли, що впали з помилкою (на відміну від skipped_count - тих,
-        # кому просто не задали рамку). Раніше помилка тут лише друкувалась
-        # у консоль ("print") і користувач про неї ніколи не дізнавався -
-        # особливо в зібраному --windowed застосунку, де консолі немає
-        # взагалі. Звідси й відчуття "обробляється лише частина файлів без
-        # жодної закономірності", хоча рамку було задано всім.
-        failed_files = []
-
-        for idx, file_path in enumerate(self.file_list_paths):
-            crop_rect_view = self.file_crop_rects.get(file_path)
-
+        def work(file_path):
+            """Фоновий потік: 'nocrop' / 'exists' / 'saved'."""
+            crop_rect_view = crop_rects.get(file_path)
             if not crop_rect_view:
-                skipped_count += 1
-                self.progress_bar.setValue(idx + 1)
-                continue
-
+                return "nocrop"
+            src_doc = pymupdf.open(file_path)
             try:
-                src_doc = pymupdf.open(file_path)
-
                 for page in src_doc:
                     # Рамка, збережена через save_current_file_crop(), задана
                     # в системі координат ВІДОБРАЖЕННЯ сторінки - тобто тій,
@@ -706,40 +649,35 @@ class PDFBatchCropperWidget(QWidget):
 
                     page.set_cropbox(real_crop_rect)
 
-                filename = os.path.basename(file_path)
-                stem, ext = os.path.splitext(filename)
-                out_path = os.path.join(output_dir, f"{stem}{suffix}{ext}")
-
-                # "Пропускати файли, для яких уже є результат".
-                if (self.extras.skip_existing and out_path not in used_out_paths
-                        and os.path.exists(out_path)):
-                    src_doc.close()
-                    existing_count += 1
-                    self.progress_bar.setValue(idx + 1)
-                    continue
-
-                dup_counter = 1
-                while out_path in used_out_paths or os.path.exists(out_path):
-                    out_path = os.path.join(output_dir, f"{stem}{suffix}_{dup_counter}{ext}")
-                    dup_counter += 1
-                used_out_paths.add(out_path)
-
+                out_path = resolve_output_path(
+                    output_dir, os.path.basename(file_path), suffix,
+                    used_out_paths, skip_existing)
+                if out_path is None:
+                    return "exists"
                 src_doc.save(out_path, garbage=4, deflate=True)
+                return "saved"
+            finally:
                 src_doc.close()
 
-                processed_count += 1
-            except Exception as e:
-                print(f"Помилка обробки {file_path}: {e}")
-                failed_files.append((os.path.basename(file_path), str(e)))
+        self.runner.start(
+            self.file_list_paths, work,
+            on_finished=lambda outcomes, cancelled: self._crop_finished(
+                outcomes, cancelled, output_dir))
 
-            self.progress_bar.setValue(idx + 1)
-            QApplication.processEvents()
+    def _crop_finished(self, outcomes, cancelled, output_dir):
+        processed_count = sum(1 for o in outcomes if o.value == "saved")
+        skipped_count = sum(1 for o in outcomes if o.value == "nocrop")
+        existing_count = sum(1 for o in outcomes if o.value == "exists")
+        # Помилки показуємо користувачу (в --windowed збірці консолі немає).
+        failed_files = [(os.path.basename(o.item), o.error)
+                        for o in outcomes if o.error]
 
         current_idx = self.file_list_widget.currentRow()
         if current_idx >= 0:
             self.on_file_selected(current_idx)
 
-        msg = f"Обробку завершено!\n\nОброблено файлів: {processed_count}"
+        head = "Обробку скасовано." if cancelled else "Обробку завершено!"
+        msg = f"{head}\n\nОброблено файлів: {processed_count}"
         if skipped_count > 0:
             msg += f"\nПропущено (без рамки): {skipped_count}"
         if existing_count:
@@ -756,7 +694,7 @@ class PDFBatchCropperWidget(QWidget):
             if len(failed_files) > 10:
                 msg += f"\n  … і ще {len(failed_files) - 10}"
 
-        has_problems = skipped_count > 0 or bool(failed_files)
+        has_problems = skipped_count > 0 or bool(failed_files) or cancelled
         title = "Є пропущені або помилкові файли" if has_problems else "Успішно!"
         if has_problems:
             QMessageBox.warning(self, title, msg)

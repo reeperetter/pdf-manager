@@ -24,40 +24,10 @@ from PyQt5.QtCore import Qt, QRectF
 from PyQt5.QtGui import QBrush, QColor, QPixmap, QImage, QTransform
 
 from theme import COLORS
+from modules.common.batch_runner import BatchRunner
+from modules.common.file_list import DropFileList
+from modules.common.outputs import resolve_output_path
 from ui_batch_extras import BatchExtras
-
-
-class RotatorDropListWidget(QListWidget):
-    """Список файлів з підтримкою Drag-and-Drop для модуля повороту."""
-
-    def __init__(self, owner, parent=None):
-        super().__init__(parent)
-        self.owner = owner
-        self.setAcceptDrops(True)
-
-    def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-        else:
-            super().dragEnterEvent(event)
-
-    def dragMoveEvent(self, event):
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-        else:
-            super().dragMoveEvent(event)
-
-    def dropEvent(self, event):
-        if event.mimeData().hasUrls():
-            files = [
-                url.toLocalFile() for url in event.mimeData().urls()
-                if url.toLocalFile().lower().endswith(".pdf")
-            ]
-            if files:
-                self.owner.append_files(files)
-            event.acceptProposedAction()
-        else:
-            super().dropEvent(event)
 
 
 class PDFBatchRotatorWidget(QWidget):
@@ -92,7 +62,7 @@ class PDFBatchRotatorWidget(QWidget):
         btn_clear_list.setMinimumHeight(30)
         btn_clear_list.clicked.connect(self.clear_file_list)
 
-        self.file_list_widget = RotatorDropListWidget(self)
+        self.file_list_widget = DropFileList(self)
         self.file_list_widget.currentRowChanged.connect(self.on_file_selected)
 
         btn_apply_all = QPushButton(" Застосувати поворот до всіх файлів")
@@ -177,8 +147,11 @@ class PDFBatchRotatorWidget(QWidget):
         self.btn_process_batch.setObjectName("BtnPrimary")
         self.btn_process_batch.clicked.connect(self.process_batch_rotate)
 
+        self.runner = BatchRunner(self, self.btn_process_batch, self.progress_bar)
+
         bottom_layout.addWidget(self.progress_bar)
         bottom_layout.addWidget(self.extras.open_button)
+        bottom_layout.addWidget(self.runner.cancel_button)
         bottom_layout.addWidget(self.btn_process_batch)
 
         right_layout.addLayout(nav_layout)
@@ -341,24 +314,16 @@ class PDFBatchRotatorWidget(QWidget):
         QMessageBox.information(self, "Успішно", "Кут повороту застосовано до всіх файлів у списку!")
 
     def process_batch_rotate(self):
-        self.btn_process_batch.setEnabled(False)
-        try:
-            self._process_batch_rotate_impl()
-        finally:
-            self.btn_process_batch.setEnabled(True)
-
-    def _process_batch_rotate_impl(self):
+        if self.runner.running:
+            return
         if not self.file_list_paths:
             QMessageBox.warning(self, "Помилка", "Список файлів порожній!")
             return
 
         # На відміну від модуля обрізки, тут НЕМАЄ вимоги "хоча б один
-        # файл повинен мати явно заданий поворот" - якщо жоден файл не
-        # повернуто, це просто означає "зберегти файли без змін", що є
-        # цілком legitimate результатом цього інструмента (наприклад,
-        # користувач повернув лише частину файлів зі списку, а решту
-        # свідомо лишив як є). Попереджаємо про це лише інформативно,
-        # не блокуючи обробку.
+        # файл повинен мати явно заданий поворот": якщо жоден файл не
+        # повернуто, це "зберегти файли без змін" - цілком допустимо.
+        # Попереджаємо лише інформативно.
         if not any(self.file_rotations.get(p, 0) for p in self.file_list_paths):
             choice = QMessageBox.question(
                 self, "Жоден файл не повернуто",
@@ -375,63 +340,49 @@ class PDFBatchRotatorWidget(QWidget):
 
         self.extras.set_output_dir(output_dir)
         suffix = self.txt_suffix.text().strip()
-        total_files = len(self.file_list_paths)
-        self.progress_bar.setMaximum(total_files)
-        self.progress_bar.setValue(0)
+        skip_existing = self.extras.skip_existing
+        rotations = dict(self.file_rotations)
+        used_out_paths = set()
 
         if self.doc:
             self.doc.close()
             self.doc = None
 
-        processed_count = 0
-        existing_count = 0
-        failed_files = []
-        used_out_paths = set()
-
-        for idx, file_path in enumerate(self.file_list_paths):
-            rotation = self.file_rotations.get(file_path, 0)
-
+        def work(file_path):
+            """Фоновий потік: повертає 'saved' або 'exists'."""
+            rotation = rotations.get(file_path, 0)
+            src_doc = pymupdf.open(file_path)
             try:
-                src_doc = pymupdf.open(file_path)
                 if rotation:
                     for page in src_doc:
                         page.set_rotation((page.rotation + rotation) % 360)
-
-                filename = os.path.basename(file_path)
-                stem, ext = os.path.splitext(filename)
-                out_path = os.path.join(output_dir, f"{stem}{suffix}{ext}")
-
-                # "Пропускати файли, для яких уже є результат": якщо файл
-                # із цим ім'ям уже лежить у папці результатів, не чіпаємо
-                # його (і не створюємо копію "_1").
-                if (self.extras.skip_existing and out_path not in used_out_paths
-                        and os.path.exists(out_path)):
-                    src_doc.close()
-                    existing_count += 1
-                    self.progress_bar.setValue(idx + 1)
-                    continue
-
-                dup_counter = 1
-                while out_path in used_out_paths or os.path.exists(out_path):
-                    out_path = os.path.join(output_dir, f"{stem}{suffix}_{dup_counter}{ext}")
-                    dup_counter += 1
-                used_out_paths.add(out_path)
-
+                out_path = resolve_output_path(
+                    output_dir, os.path.basename(file_path), suffix,
+                    used_out_paths, skip_existing)
+                if out_path is None:
+                    return "exists"
                 src_doc.save(out_path, garbage=4, deflate=True)
+                return "saved"
+            finally:
                 src_doc.close()
 
-                processed_count += 1
-            except Exception as e:
-                failed_files.append((os.path.basename(file_path), str(e)))
+        self.runner.start(
+            self.file_list_paths, work,
+            on_finished=lambda outcomes, cancelled: self._rotate_finished(
+                outcomes, cancelled, output_dir))
 
-            self.progress_bar.setValue(idx + 1)
-            QApplication.processEvents()
+    def _rotate_finished(self, outcomes, cancelled, output_dir):
+        processed_count = sum(1 for o in outcomes if o.value == "saved")
+        existing_count = sum(1 for o in outcomes if o.value == "exists")
+        failed_files = [(os.path.basename(o.item), o.error)
+                        for o in outcomes if o.error]
 
         current_idx = self.file_list_widget.currentRow()
         if current_idx >= 0:
             self.on_file_selected(current_idx)
 
-        msg = f"Обробку завершено!\n\nЗбережено файлів: {processed_count}"
+        head = "Обробку скасовано." if cancelled else "Обробку завершено!"
+        msg = f"{head}\n\nЗбережено файлів: {processed_count}"
         if existing_count:
             msg += f"\nПропущено (вже є результат): {existing_count}"
         if failed_files:
@@ -447,7 +398,8 @@ class PDFBatchRotatorWidget(QWidget):
                 msg += f"\n  … і ще {len(failed_files) - 10}"
             QMessageBox.warning(self, "Є файли з помилкою", msg)
         else:
-            QMessageBox.information(self, "Успішно!", msg)
+            QMessageBox.information(
+                self, "Скасовано" if cancelled else "Успішно!", msg)
 
 
 if __name__ == "__main__":
