@@ -10,6 +10,7 @@ import glob
 import os
 import shutil
 import sys
+import threading
 import time
 
 import pytesseract
@@ -60,6 +61,11 @@ def _refresh_path_from_registry():
     os.environ["PATH"] = fresh_path + ";" + os.environ.get("PATH", "")
 
 
+_ENV_LOCK = threading.Lock()
+_ENV_DEPTH = 0
+_ENV_SAVED = {}
+
+
 @contextlib.contextmanager
 def _external_tesseract_env():
     """
@@ -91,25 +97,36 @@ def _external_tesseract_env():
     найпоширенішому випадку. Коли "_ORIG" немає, правильна "оригінальна"
     поведінка - просто прибрати LD_LIBRARY_PATH повністю (бо PyInstaller
     сам створив її з нуля)."""
+    # Лічильник входів + замок: OCR сторінок іде паралельно в кількох
+    # потоках, і без цього перший потік, що вийшов, повернув би змінні
+    # в середовище, поки інший ще запускає tesseract.
+    global _ENV_DEPTH, _ENV_SAVED
     keys = ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH")
-    saved = {}
-    for key in keys:
-        if key not in os.environ:
-            continue
-        saved[key] = os.environ.get(key)
-        orig_value = os.environ.get(key + "_ORIG")
-        if orig_value:
-            os.environ[key] = orig_value
-        else:
-            os.environ.pop(key, None)
+    with _ENV_LOCK:
+        if _ENV_DEPTH == 0:
+            _ENV_SAVED = {}
+            for key in keys:
+                if key not in os.environ:
+                    continue
+                _ENV_SAVED[key] = os.environ.get(key)
+                orig_value = os.environ.get(key + "_ORIG")
+                if orig_value:
+                    os.environ[key] = orig_value
+                else:
+                    os.environ.pop(key, None)
+        _ENV_DEPTH += 1
     try:
         yield
     finally:
-        for key, value in saved.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+        with _ENV_LOCK:
+            _ENV_DEPTH -= 1
+            if _ENV_DEPTH == 0:
+                for key, value in _ENV_SAVED.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+                _ENV_SAVED = {}
 
 
 def find_tesseract_cmd():
@@ -825,3 +842,10 @@ def dewarp_page_image(pil_img, log_fn=None, cancel_event=None):
 
     return _dewarp_perline(
         pil_img, cv2, np, log_fn=log_fn, cancel_event=cancel_event)
+
+def ocr_worker_count():
+    """Скільки сторінок розпізнавати одночасно. Tesseract працює окремим
+    процесом, тож потоки Python тут справді паралельні. Беремо половину
+    ядер (до 4): решта лишається системі та самому Tesseract. На
+    1-2 ядрах повертає 1 - поведінка як раніше."""
+    return max(1, min(4, (os.cpu_count() or 2) // 2))

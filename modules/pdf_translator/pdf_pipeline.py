@@ -8,6 +8,8 @@
 """
 import gc
 import io
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import re
 import os
 
@@ -18,7 +20,7 @@ from PIL import Image, ImageOps
 from .languages import nllb_for
 from . import nllb
 from .ocr import (detect_and_fix_orientation, dewarp_page_image,
-                 ocr_lines_from_image)
+                 ocr_lines_from_image, ocr_worker_count)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # DejaVuSans.ttf фізично лежить у КОРЕНІ репозиторію (поруч із main.py), а
@@ -440,6 +442,57 @@ def translate_with_glossary(texts, glossary, **kwargs):
     return result
 
 
+MIN_RENDER_DPI = 200
+
+
+def page_render_dpi(page, max_dpi):
+    """DPI рендеру сторінки.
+
+    Для скану немає сенсу рендерити вище за природну роздільність
+    вбудованого зображення: це лише збільшує картинку (повільніший OCR,
+    більший вихідний PDF) без жодного виграшу в чіткості. Тому беремо
+    найвищу роздільність великих зображень на сторінці (округлюємо вгору
+    до 10, в межах MIN_RENDER_DPI..max_dpi). Сторінки без великих
+    зображень (векторний текст) рендеримо з max_dpi, як і раніше."""
+    try:
+        page_area = max(page.rect.width * page.rect.height, 1.0)
+        best = 0.0
+        for info in page.get_image_info():
+            bbox = pymupdf.Rect(info["bbox"]) & page.rect
+            if bbox.is_empty or bbox.width * bbox.height < 0.5 * page_area:
+                continue
+            w_in = info["bbox"][2] - info["bbox"][0]
+            h_in = info["bbox"][3] - info["bbox"][1]
+            if w_in <= 0 or h_in <= 0:
+                continue
+            dpi_x = info["width"] / (w_in / 72.0)
+            dpi_y = info["height"] / (h_in / 72.0)
+            best = max(best, dpi_x, dpi_y)
+        if best <= 0:
+            return max_dpi
+        native = int(-(-best // 10) * 10)
+        return max(MIN_RENDER_DPI, min(max_dpi, native))
+    except Exception:
+        return max_dpi
+
+
+def _shutdown_pool(scope):
+    """Зупиняє пул OCR, закриває документи потоків, відновлює OMP."""
+    executor = scope.get("executor")
+    if executor is not None:
+        executor.shutdown(wait=True, cancel_futures=True)
+    for d in scope.get("worker_docs", []):
+        try:
+            d.close()
+        except Exception:
+            pass
+    if "old_omp" in scope and scope.get("workers", 1) > 1:
+        if scope["old_omp"] is None:
+            os.environ.pop("OMP_THREAD_LIMIT", None)
+        else:
+            os.environ["OMP_THREAD_LIMIT"] = scope["old_omp"]
+
+
 def _process_pdf_core(
     input_path,
     dpi,
@@ -477,18 +530,38 @@ def _process_pdf_core(
     out_translated = {lang: pymupdf.open() for lang in translate_targets}
 
     try:
-        for page_index in range(n_pages):
+        dewarp_state = {"on": dewarp}
+        local = threading.local()
+        worker_docs = []
+        docs_lock = threading.Lock()
+
+        def thread_doc():
+            """Документ PyMuPDF не можна ділити між потоками: у кожного
+            потоку власна копія."""
+            d = getattr(local, "doc", None)
+            if d is None:
+                d = pymupdf.open(input_path)
+                local.doc = d
+                with docs_lock:
+                    worker_docs.append(d)
+            return d
+
+        def analyze(page_index):
+            """Рендер + орієнтація + розпрямлення + OCR однієї сторінки
+            (виконується у пулі потоків; не чіпає вихідні документи)."""
             if cancel_event and cancel_event.is_set():
                 raise ProcessingCancelled()
-
             page_num = page_index + 1
             in_range = (page_start is None or page_num >= page_start) and \
                        (page_end is None or page_num <= page_end)
 
-            page = doc[page_index]
-            pix = page.get_pixmap(dpi=dpi)
+            page = thread_doc()[page_index]
+            page_dpi = page_render_dpi(page, dpi)
+            pix = page.get_pixmap(dpi=page_dpi)
             img_bytes = pix.tobytes("png")
             pil_img = Image.open(io.BytesIO(img_bytes))
+            pil_img.load()
+            del pix
 
             was_rotated = False
             if in_range:
@@ -499,12 +572,7 @@ def _process_pdf_core(
                     pil_img.save(buf, format="PNG")
                     img_bytes = buf.getvalue()
 
-            page_w = pil_img.width * 72 / dpi
-            page_h = pil_img.height * 72 / dpi
-            scale_x = page_w / pil_img.width
-            scale_y = page_h / pil_img.height
-
-            if dewarp and in_range:
+            if dewarp_state["on"] and in_range:
                 try:
                     corrected = dewarp_page_image(
                         pil_img, log_fn=log_fn, cancel_event=cancel_event)
@@ -515,26 +583,62 @@ def _process_pdf_core(
                         img_bytes = buf.getvalue()
                 except RuntimeError as e:
                     log_fn(f"  [!] Розпрямлення недоступне: {e}")
-                    dewarp = False
+                    dewarp_state["on"] = False
 
-            lines = []
+            lines, ocr_score = [], None
             if in_range and (make_searchable or translate_targets or collect_text):
                 if was_rotated:
-                    lines, ocr_score = ocr_lines_from_image(pil_img, source_lang=source_lang)
-                    if lines and ocr_score < low_confidence_threshold:
-                        low_confidence_pages.append(page_num)
-                        log_fn(
-                            f"  [!] Стор. {page_num}: низька впевненість OCR "
-                            f"({ocr_score:.0f}/100)")
+                    lines, ocr_score = ocr_lines_from_image(
+                        pil_img, source_lang=source_lang)
                 else:
                     lines = extract_lines_from_page(page)
                     if not lines:
-                        lines, ocr_score = ocr_lines_from_image(pil_img, source_lang=source_lang)
-                        if lines and ocr_score < low_confidence_threshold:
-                            low_confidence_pages.append(page_num)
-                            log_fn(
-                                f"  [!] Стор. {page_num}: низька впевненість OCR "
-                                f"({ocr_score:.0f}/100)")
+                        lines, ocr_score = ocr_lines_from_image(
+                            pil_img, source_lang=source_lang)
+            page = None
+            return {
+                "page_num": page_num, "pil_img": pil_img, "img_bytes": img_bytes,
+                "lines": lines, "ocr_score": ocr_score, "dpi": page_dpi,
+            }
+
+        workers = min(ocr_worker_count(), max(1, n_pages))
+        old_omp = os.environ.get("OMP_THREAD_LIMIT")
+        if workers > 1:
+            # Кожен екземпляр Tesseract - в один потік, щоб кілька сторінок
+            # паралельно не конкурували за ядра.
+            os.environ["OMP_THREAD_LIMIT"] = "1"
+        executor = ThreadPoolExecutor(max_workers=workers)
+        futures = {}
+        next_submit = 0
+
+        def submit_upto(limit):
+            nonlocal next_submit
+            while next_submit < min(limit, n_pages):
+                futures[next_submit] = executor.submit(analyze, next_submit)
+                next_submit += 1
+
+        submit_upto(workers)
+        for page_index in range(n_pages):
+            if cancel_event and cancel_event.is_set():
+                raise ProcessingCancelled()
+
+            res = futures.pop(page_index).result()
+            submit_upto(page_index + 1 + workers)
+
+            page_num = res["page_num"]
+            pil_img, img_bytes, lines = res["pil_img"], res["img_bytes"], res["lines"]
+            page_dpi = res["dpi"]
+            ocr_score = res["ocr_score"]
+            if lines and ocr_score is not None and ocr_score < low_confidence_threshold:
+                low_confidence_pages.append(page_num)
+                log_fn(
+                    f"  [!] Стор. {page_num}: низька впевненість OCR "
+                    f"({ocr_score:.0f}/100)")
+
+            page_w = pil_img.width * 72 / page_dpi
+            page_h = pil_img.height * 72 / page_dpi
+            scale_x = page_w / pil_img.width
+            scale_y = page_h / pil_img.height
 
             if export_text_formats:
                 original_page_texts.append("\n".join(ln["text"] for ln in lines))
@@ -623,8 +727,7 @@ def _process_pdf_core(
                         except Exception as e:
                             log_fn(f"  [!] Пропущено рядок (переклад {lang}): {e}")
 
-            del pix, pil_img, img_bytes, lines
-            page = None
+            del pil_img, img_bytes, lines, res
             pymupdf.TOOLS.store_shrink(100)
             gc.collect()
 
@@ -633,6 +736,7 @@ def _process_pdf_core(
 
     except BaseException:
         # Скасування чи помилка посеред файлу - не лишаємо відкритих документів.
+        _shutdown_pool(locals())
         if out_searchable is not None:
             out_searchable.close()
         for d in out_translated.values():
@@ -640,6 +744,7 @@ def _process_pdf_core(
         doc.close()
         raise
 
+    _shutdown_pool(locals())
     doc.close()
     gc.collect()
     return PdfProcessResult(
