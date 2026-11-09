@@ -3,13 +3,11 @@ import os
 import threading
 
 from PyQt5 import QtCore, QtWidgets
+from modules.common.settings import SETTINGS_APP, SETTINGS_ORG
 
 from ui_batch_extras import BatchExtras
 from .split_core import (MODE_BOOKMARKS, MODE_EACH, MODE_EVERY_N, MODE_RANGES,
                          split_pdf)
-
-SETTINGS_ORG = "pdf-ocr-translator"
-SETTINGS_APP = "PDFManager"
 
 
 class _Signals(QtCore.QObject):

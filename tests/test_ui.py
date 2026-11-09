@@ -102,3 +102,35 @@ def test_compressor_batch(qapp, make_pdf, mocked_dialogs):
     _wait(qapp, lambda: msgs)
     assert len(os.listdir(out)) == 3
     assert w.results_table.rowCount() == 3
+
+
+def test_window_geometry_is_remembered(qapp):
+    import hub_window
+    from modules.common.settings import app_settings
+    app_settings().remove("window/geometry")
+    w = hub_window.MainHubWindow()
+    w.resize(1111, 777)
+    w.show()
+    w.close()
+    w2 = hub_window.MainHubWindow()
+    assert (w2.width(), w2.height()) == (1111, 777)
+
+
+def test_shortcuts_switch_tabs_and_open_file_dialog(qapp, monkeypatch):
+    import hub_window
+    w = hub_window.MainHubWindow()
+    # Активація вікна в offscreen недоступна - викликаємо сам шорткат.
+    w.shortcuts["Ctrl+5"].activated.emit()
+    assert w.stack.currentIndex() == 5
+    assert w.sidebar.btn_group.checkedId() == 5
+    w.shortcuts["Ctrl+0"].activated.emit()
+    assert w.stack.currentIndex() == 0
+
+    # Ctrl+O викликає діалог додавання файлів активного інструмента
+    calls = []
+    for idx, widget in ((4, w.cropper_widget), (7, w.merge_widget)):
+        name = "add_files" if idx == 4 else "add_files_dialog"
+        monkeypatch.setattr(widget, name, lambda *a, n=idx: calls.append(n))
+        w.go_to_module(idx)
+        w.shortcuts["Ctrl+O"].activated.emit()
+    assert calls == [4, 7]

@@ -9,11 +9,10 @@
 import os
 
 from PyQt5 import QtCore, QtGui, QtWidgets
+from modules.common.settings import SETTINGS_APP, SETTINGS_ORG
 
 # Ті самі значення, що й у modules/pdf_translator/base_widget.py, щоб
 # налаштування (нещодавні файли) були спільними для всього застосунку.
-SETTINGS_ORG = "pdf-ocr-translator"
-SETTINGS_APP = "PDFManager"
 RECENT_LIMIT = 10
 
 

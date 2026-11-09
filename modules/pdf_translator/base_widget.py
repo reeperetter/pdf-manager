@@ -18,6 +18,7 @@ import traceback
 
 import pymupdf
 from PyQt5 import QtCore, QtGui, QtWidgets
+from modules.common.settings import SETTINGS_APP, SETTINGS_ORG
 
 from modules.common.eta import EtaEstimator
 from theme import COLORS
@@ -32,9 +33,6 @@ from .pdf_pipeline import (
 from .languages import LANGUAGES
 from .tesseract_installer import ensure_tesseract_available, ensure_language_data
 from .nllb_installer import ensure_translation_model
-
-SETTINGS_ORG = "pdf-ocr-translator"
-SETTINGS_APP = "PDFManager"
 
 
 class PdfDropListWidget(QtWidgets.QListWidget):

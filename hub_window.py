@@ -1,5 +1,6 @@
-from PyQt5 import QtCore, QtWidgets
+from PyQt5 import QtCore, QtGui, QtWidgets
 
+from modules.common.settings import app_settings
 from ui_icons import create_vector_icon
 from theme import COLORS
 from ui_tiles import TileGrid, ToolCard
@@ -143,6 +144,63 @@ class MainHubWindow(QtWidgets.QMainWindow):
         self.setMinimumSize(1000, 650)
 
         self._init_ui()
+        self._init_shortcuts()
+        self._restore_window_state()
+
+    # ------------------------------------------------ стан вікна --
+    def _restore_window_state(self):
+        try:
+            geometry = app_settings().value("window/geometry")
+            if geometry:
+                self.restoreGeometry(geometry)
+        except Exception:
+            pass  # пошкоджені налаштування - лишаємо розмір за замовчуванням
+
+    def closeEvent(self, event):
+        try:
+            app_settings().setValue("window/geometry", self.saveGeometry())
+        except Exception:
+            pass
+        super().closeEvent(event)
+
+    # ------------------------------------------------ гарячі клавіші --
+    SHORTCUTS = [
+        ("Ctrl+O", "Додати файли в поточному інструменті"),
+        ("Ctrl+0 … Ctrl+8", "Перейти до розділу (0 - Головна)"),
+        ("Ctrl+Q", "Вийти"),
+    ]
+
+    def _init_shortcuts(self):
+        self.shortcuts = {}
+
+        def add(seq, handler):
+            sc = QtWidgets.QShortcut(QtGui.QKeySequence(seq), self)
+            sc.setContext(QtCore.Qt.WindowShortcut)
+            sc.activated.connect(handler)
+            self.shortcuts[seq] = sc
+
+        add("Ctrl+O", self._shortcut_add_files)
+        add("Ctrl+Q", self.close)
+        for i in range(0, 9):
+            add(f"Ctrl+{i}", lambda i=i: self.go_to_module(i))
+
+    def _active_tool(self):
+        widget = self.stack.currentWidget()
+        getter = getattr(widget, "current_tool", None)
+        return getter() if callable(getter) else widget
+
+    def _shortcut_add_files(self):
+        tool = self._active_tool()
+        # Порядок важливий: *_dialog відкриває вибір файлів; add_files() без
+        # аргументів теж відкриває його, а add_files(paths) вимагає список.
+        for name in ("add_files_dialog", "add_images", "add_files"):
+            fn = getattr(tool, name, None)
+            if callable(fn):
+                try:
+                    fn()
+                except TypeError:
+                    continue
+                return
 
     def _init_ui(self):
         central_widget = QtWidgets.QWidget()

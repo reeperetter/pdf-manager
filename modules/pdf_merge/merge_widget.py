@@ -3,12 +3,10 @@ import os
 import threading
 
 from PyQt5 import QtCore, QtWidgets
+from modules.common.settings import SETTINGS_APP, SETTINGS_ORG
 
 from ui_batch_extras import BatchExtras
 from .merge_core import merge_pdfs, page_count
-
-SETTINGS_ORG = "pdf-ocr-translator"
-SETTINGS_APP = "PDFManager"
 
 
 class _Signals(QtCore.QObject):

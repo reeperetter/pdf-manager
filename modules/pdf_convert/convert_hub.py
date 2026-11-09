@@ -159,6 +159,10 @@ class ConvertHubWidget(QtWidgets.QWidget):
 
         home_layout.addWidget(TileGrid(cards, min_tile_width=250), 1)
 
+    def current_tool(self):
+        """Активна сторінка (каталог або інструмент) - для гарячих клавіш."""
+        return self.stack.currentWidget()
+
     def open_tool(self, key):
         self.stack.setCurrentWidget(self.pages[key])
 

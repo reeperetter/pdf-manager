@@ -12,11 +12,9 @@ import threading
 from dataclasses import dataclass, field
 
 from PyQt5 import QtCore, QtWidgets
+from modules.common.settings import SETTINGS_APP, SETTINGS_ORG
 
 from ui_batch_extras import BatchExtras
-
-SETTINGS_ORG = "pdf-ocr-translator"
-SETTINGS_APP = "PDFManager"
 
 
 @dataclass
