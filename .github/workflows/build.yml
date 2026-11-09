@@ -1,8 +1,9 @@
 name: Build EXE / Linux binary
 
+# Збірка НЕ запускається при кожному push у main: вручну (Actions ->
+# Build EXE / Linux binary -> Run workflow) або при пуші тегу v* (реліз).
 on:
   push:
-    branches: [ main ]
     tags: [ 'v*' ]
   workflow_dispatch:
     inputs:
