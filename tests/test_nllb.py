@@ -147,3 +147,31 @@ def test_unsupported_source_raises_instead_of_guessing(fake_translator):
     import pytest
     with pytest.raises(RuntimeError):
         pp.translate_lines(["x"], target_lang="uk", source_lang="xx")
+
+
+def test_prepare_decaps_and_leaders():
+    from modules.pdf_translator.text_prep import prepare
+    core, fin = prepare("SUPPLEMENTAL RESTRAINT SYSTEM")
+    assert core == "Supplemental restraint system"
+    assert fin("Дополнительная система") == "ДОПОЛНИТЕЛЬНАЯ СИСТЕМА"
+    core, fin = prepare("(SRS) — AIR BAGS . . . . . . . . . . . . . 14")
+    assert core == "(SRS) — air bags"          # короткі абревіатури лишаються
+    assert fin("Подушки") == "ПОДУШКИ . . . . . . . . . . . . . 14"
+    assert prepare("Welcome back to the app")[0] == "Welcome back to the app"
+    core, fin = prepare("REMOTE START . . . . 11")
+    assert core == "Remote start" and fin("Старт").endswith(". . . . 11")
+    assert prepare("UCONNECT 130")[0] == "Uconnect 130"
+    assert prepare("ATC")[0] == "ATC"            # лише абревіатура - не чіпаємо
+
+
+def test_translator_sends_normalized_text_to_model(fake_translator):
+    seen = []
+    real = fake_translator.tr.translate_batch
+
+    def spy(srcs, **kw):
+        seen.extend(srcs)
+        return real(srcs, **kw)
+    fake_translator.tr.translate_batch = spy
+    out = fake_translator.translate(["DRIVER COCKPIT . . . . 6"], "eng_Latn", "rus_Cyrl")
+    assert seen[0][1:-1] == ["Driver", "cockpit"]      # модель бачить нормальний регістр
+    assert out == ["DRIVER COCKPIT . . . . 6"]           # заглушка перекладає в UPPER, КАПС і хвіст відновлено

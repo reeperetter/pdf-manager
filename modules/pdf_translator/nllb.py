@@ -30,6 +30,8 @@ import tempfile
 import threading
 import urllib.request
 
+from .text_prep import prepare
+
 # Репозиторії з готовою конвертацією CTranslate2 (int8). Пробуємо по черзі.
 MODEL_REPOS = [
     "JustFrederik/nllb-200-distilled-600M-ct2-int8",
@@ -340,10 +342,12 @@ class NllbTranslator:
             return result
 
         segments = []  # (індекс рядка, частина, токени)
+        finishers = {}
         for i, text in enumerate(texts):
             t = (text or "").strip()
             if not t or not _has_letters(t):
                 continue
+            t, finishers[i] = prepare(t)  # КАПС і крапкові виносні - див. text_prep
             for part in split_text(t, self._count):
                 segments.append(
                     (i, part, [src] + self.sp.encode(part, out_type=str) + ["</s>"]))
@@ -372,7 +376,8 @@ class NllbTranslator:
         for k, (i, _part, _tok) in enumerate(segments):
             pieces.setdefault(i, []).append(translated.get(k, ""))
         for i, parts in pieces.items():
-            result[i] = " ".join(p for p in parts if p) or texts[i]
+            joined = " ".join(p for p in parts if p)
+            result[i] = finishers[i](joined) if joined else texts[i]
         return result
 
 
