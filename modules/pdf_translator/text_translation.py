@@ -3,25 +3,49 @@ import re
 
 from . import nllb
 from .errors import ProcessingCancelled
-from .languages import nllb_for
+from .languages import BY_ISO, nllb_for
+
+
+_UK_LETTERS = set("іїєґІЇЄҐ")
+_RU_LETTERS = set("ыэъёЫЭЪЁ")
 
 
 def detect_text_language(text):
-    """Спроба визначити мову тексту локально без зовнішніх API."""
+    """Визначає мову тексту локально, лише серед мов, які ми вміємо
+    перекладати (реєстр languages.py).
+
+    Раніше брався перший результат langdetect: для української він часто
+    повертав 'mk', 'sr', 'be' тощо - таких мов у реєстрі немає, і код
+    підмінявся англійським. Модель отримувала кириличний текст із позначкою
+    'англійська' і лише копіювала/транслітерувала слова. Тепер:
+      1) українська/російська розрізняються за характерними літерами;
+      2) з розподілу ймовірностей langdetect береться найкраща ПІДТРИМУВАНА
+         мова;
+      3) якщо нічого не підійшло - за алфавітом (кирилиця -> uk, грецька
+         -> el, інакше en)."""
     if not text or len(text.strip()) < 3:
         return "en"
 
+    uk = sum(1 for ch in text if ch in _UK_LETTERS)
+    ru = sum(1 for ch in text if ch in _RU_LETTERS)
+    if uk > ru:
+        return "uk"
+    if ru > uk:
+        return "ru"
+
     try:
-        from langdetect import detect
-        lang = detect(text)
-        return lang if lang else "en"
+        from langdetect import DetectorFactory, detect_langs
+        DetectorFactory.seed = 0  # однаковий результат при кожному запуску
+        for cand in detect_langs(text):
+            if cand.lang in BY_ISO:
+                return cand.lang
     except Exception:
         pass
 
-    # Резервний аналіз за алфавітом
-    has_cyrillic = any('\u0400' <= char <= '\u04FF' for char in text)
-    if has_cyrillic:
+    if any("\u0400" <= ch <= "\u04FF" for ch in text):
         return "uk"
+    if any("\u0370" <= ch <= "\u03FF" for ch in text):
+        return "el"
     return "en"
 
 
@@ -39,8 +63,9 @@ def translate_lines(lines_list, target_lang="uk", source_lang="auto", log_fn=Non
         raise ProcessingCancelled()
 
     actual_source = source_lang
-    if not actual_source or actual_source == "auto" or "+" in actual_source:
-        sample = " ".join(l.strip() for l in lines_list if l.strip())[:600]
+    auto = not actual_source or actual_source == "auto" or "+" in actual_source
+    if auto:
+        sample = " ".join(l.strip() for l in lines_list if l.strip())[:3000]
         actual_source = detect_text_language(sample)
 
     tgt = nllb_for(target_lang)
@@ -48,10 +73,12 @@ def translate_lines(lines_list, target_lang="uk", source_lang="auto", log_fn=Non
     if not tgt:
         raise RuntimeError(f"Мова перекладу '{target_lang}' не підтримується.")
     if not src:
-        if log_fn:
-            log_fn(f"  [!] Мову оригіналу '{actual_source}' не розпізнано, "
-                   "беру англійську.")
-        src = nllb_for("en")
+        raise RuntimeError(
+            f"Мову оригіналу '{actual_source}' не підтримує переклад. "
+            "Оберіть її вручну у списку «Мова оригіналу».")
+    if log_fn:
+        log_fn(f"  Переклад: {src} -> {tgt}"
+               + (" (мову оригіналу визначено автоматично)" if auto else ""))
 
     return nllb.get_translator().translate(
         lines_list, src, tgt, cancel_event=cancel_event)

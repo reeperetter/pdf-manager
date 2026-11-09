@@ -127,3 +127,23 @@ def test_glossary_term_survives(fake_translator):
     r = pp.translate_with_glossary(["hello Acme world"], {"Acme"},
                                    target_lang="uk", source_lang="en")
     assert r == ["HELLO Acme WORLD"]
+
+
+def test_detect_language_never_returns_unsupported_code():
+    from modules.pdf_translator.languages import BY_ISO
+    from modules.pdf_translator.text_translation import detect_text_language as d
+    assert d("Доброго дня, це приклад українського тексту про їжу та ґанок") == "uk"
+    assert d("Это пример русского текста, который содержит буквы ы и э") == "ru"
+    assert d("The quick brown fox jumps over the lazy dog") == "en"
+    assert d("Dies ist ein deutscher Satz über das Wetter und die Stadt") == "de"
+    # македонська/сербська кирилиця без укр/рос літер не повинна давати
+    # неіснуючий код (раніше це вело до підміни на англійську)
+    assert d("Ова е пример на текст") in BY_ISO
+    assert d("Ово је пример текста") in BY_ISO
+    assert d("12345 67890") in BY_ISO
+
+
+def test_unsupported_source_raises_instead_of_guessing(fake_translator):
+    import pytest
+    with pytest.raises(RuntimeError):
+        pp.translate_lines(["x"], target_lang="uk", source_lang="xx")

@@ -178,3 +178,23 @@ def test_settings_reset_window(qapp, monkeypatch):
     app_settings().setValue("window/geometry", b"x")
     hub_window.MainHubWindow().settings_page._reset_window()
     assert app_settings().value("window/geometry") is None
+
+
+def test_settings_translation_selftest(qapp, monkeypatch, tmp_path):
+    import threading
+
+    import hub_window
+    from modules.pdf_translator import nllb
+
+    class _Tr:
+        def translate(self, texts, src, tgt, cancel_event=None):
+            return [f"[{src}->{tgt}] {t}" for t in texts]
+    monkeypatch.setattr(nllb, "get_translator", lambda: _Tr())
+    shown = []
+    mb = QtWidgets.QMessageBox
+    monkeypatch.setattr(mb, "information", staticmethod(lambda *a, **k: shown.append(a[2])))
+    monkeypatch.setattr(mb, "warning", staticmethod(lambda *a, **k: shown.append(a[2])))
+    page = hub_window.MainHubWindow().settings_page
+    page._test_nllb()
+    assert shown and "ukr_Cyrl → eng_Latn" in shown[0] and "[eng_Latn->ukr_Cyrl]" in shown[0]
+    assert threading.active_count() >= 1

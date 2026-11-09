@@ -361,7 +361,7 @@ class NllbTranslator:
                 outs = self.tr.translate_batch(
                     [segments[k][2] for k in idx],
                     target_prefix=[[tgt]] * len(idx),
-                    beam_size=2,
+                    beam_size=4,
                     max_decoding_length=MAX_SEGMENT_TOKENS * 2,
                 )
                 for k, out in zip(idx, outs):

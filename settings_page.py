@@ -6,6 +6,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 
 from modules.common.settings import app_settings
 from modules.pdf_translator import nllb, tesseract_setup
+from modules.common.progress_task import run_with_progress
 from modules.pdf_translator.nllb_installer import ensure_translation_model
 
 
@@ -101,10 +102,13 @@ class SettingsPage(QtWidgets.QWidget):
         btn_open = QtWidgets.QPushButton("Відкрити теку")
         btn_open.setObjectName("BtnSecondary")
         btn_open.clicked.connect(self._open_nllb_dir)
+        self.btn_nllb_test = QtWidgets.QPushButton("Перевірити переклад")
+        self.btn_nllb_test.setObjectName("BtnSecondary")
+        self.btn_nllb_test.clicked.connect(self._test_nllb)
         self.btn_nllb_delete = QtWidgets.QPushButton("Видалити модель")
         self.btn_nllb_delete.setObjectName("BtnDanger")
         self.btn_nllb_delete.clicked.connect(self._delete_nllb)
-        for b in (self.btn_nllb_download, btn_open, self.btn_nllb_delete):
+        for b in (self.btn_nllb_download, self.btn_nllb_test, btn_open, self.btn_nllb_delete):
             row.addWidget(b)
         row.addStretch()
         sec.addLayout(row)
@@ -176,6 +180,7 @@ class SettingsPage(QtWidgets.QWidget):
                 f"Куди: {nllb.download_target_hint()}")
         self.btn_nllb_download.setEnabled(path is None)
         self.btn_nllb_delete.setEnabled(path is not None)
+        self.btn_nllb_test.setEnabled(path is not None)
 
         tess_dir = os.path.join(tesseract_setup.USER_TESSDATA_ROOT, "tessdata")
         langs = sorted(f[:-len(".traineddata")] for f in os.listdir(tess_dir)
@@ -190,6 +195,39 @@ class SettingsPage(QtWidgets.QWidget):
     def _download_nllb(self):
         ensure_translation_model(self)
         self.refresh()
+
+    TEST_SAMPLES = [
+        ("ukr_Cyrl", "eng_Latn", "Доброго дня! Як у вас справи? Сьогодні гарна погода."),
+        ("eng_Latn", "ukr_Cyrl", "The weather is nice today, and we are going to the park."),
+        ("rus_Cyrl", "ukr_Cyrl", "Это простой пример текста для проверки перевода."),
+    ]
+
+    def _test_nllb(self):
+        """Переклад кількох контрольних речень: показує, чи модель працює,
+        незалежно від OCR, мови оригіналу та розбиття на рядки."""
+        import time
+
+        def work(report, cancel):
+            report(0, 0, "Завантаження моделі в пам'ять...")
+            tr = nllb.get_translator()
+            results = []
+            for src, tgt, text in self.TEST_SAMPLES:
+                t0 = time.time()
+                out = tr.translate([text], src, tgt)[0]
+                results.append((src, tgt, text, out, time.time() - t0))
+            return results
+
+        results, error, cancelled = run_with_progress(self, "Перевірка перекладу", work)
+        if cancelled:
+            return
+        if error:
+            QtWidgets.QMessageBox.warning(self, "Помилка перекладу", error)
+            return
+        lines = []
+        for src, tgt, text, out, secs in results:
+            lines.append(f"{src} → {tgt} ({secs:.1f} с)\n  {text}\n  ⇒ {out}")
+        QtWidgets.QMessageBox.information(
+            self, "Результат перевірки", "\n\n".join(lines))
 
     def _open_nllb_dir(self):
         path = nllb.find_model()
