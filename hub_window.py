@@ -12,6 +12,7 @@ from modules.pdf_rotator.rotator_widget import PDFBatchRotatorWidget
 from modules.pdf_compressor.compressor_widget import PDFBatchCompressorWidget
 from modules.pdf_merge.merge_widget import PDFMergeWidget
 from modules.pdf_split.split_widget import PDFSplitWidget
+from settings_page import SettingsPage
 
 
 class ModernSidebar(QtWidgets.QFrame):
@@ -64,6 +65,9 @@ class ModernSidebar(QtWidgets.QFrame):
         layout.addWidget(self.btn_split)
 
         layout.addStretch()
+
+        self.btn_settings = self._create_nav_button("Налаштування", "settings", 9)
+        layout.addWidget(self.btn_settings)
 
         version_label = QtWidgets.QLabel("reeperetter")
         version_label.setObjectName("VersionLabel")
@@ -166,7 +170,7 @@ class MainHubWindow(QtWidgets.QMainWindow):
     # ------------------------------------------------ гарячі клавіші --
     SHORTCUTS = [
         ("Ctrl+O", "Додати файли в поточному інструменті"),
-        ("Ctrl+0 … Ctrl+8", "Перейти до розділу (0 - Головна)"),
+        ("Ctrl+0 … Ctrl+9", "Перейти до розділу (0 - Головна, 9 - Налаштування)"),
         ("Ctrl+Q", "Вийти"),
     ]
 
@@ -181,7 +185,7 @@ class MainHubWindow(QtWidgets.QMainWindow):
 
         add("Ctrl+O", self._shortcut_add_files)
         add("Ctrl+Q", self.close)
-        for i in range(0, 9):
+        for i in range(0, 10):
             add(f"Ctrl+{i}", lambda i=i: self.go_to_module(i))
 
     def _active_tool(self):
@@ -225,6 +229,7 @@ class MainHubWindow(QtWidgets.QMainWindow):
         self.compressor_widget = PDFBatchCompressorWidget()
         self.merge_widget = PDFMergeWidget()
         self.split_widget = PDFSplitWidget()
+        self.settings_page = SettingsPage(self.SHORTCUTS)
 
         self.home_page = HomePage()
         self.home_page.tool_selected.connect(self.go_to_module)
@@ -238,6 +243,7 @@ class MainHubWindow(QtWidgets.QMainWindow):
         self.stack.addWidget(self.compressor_widget)
         self.stack.addWidget(self.merge_widget)
         self.stack.addWidget(self.split_widget)
+        self.stack.addWidget(self.settings_page)
 
         main_layout.addWidget(self.stack, stretch=1)
 

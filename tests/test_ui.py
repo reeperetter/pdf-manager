@@ -134,3 +134,47 @@ def test_shortcuts_switch_tabs_and_open_file_dialog(qapp, monkeypatch):
         w.go_to_module(idx)
         w.shortcuts["Ctrl+O"].activated.emit()
     assert calls == [4, 7]
+
+
+def test_settings_page_workers_and_model_state(qapp, monkeypatch, tmp_path):
+    import hub_window
+    from modules.common.settings import app_settings
+    from modules.pdf_translator import nllb
+    from modules.pdf_translator.ocr import ocr_worker_count
+
+    monkeypatch.setenv("PDFMANAGER_MODELS_DIR", str(tmp_path / "models"))
+    app_settings().setValue("ocr/workers", 0)
+    w = hub_window.MainHubWindow()
+    page = w.settings_page
+    assert w.stack.count() == 10 and w.sidebar.btn_settings.text() == "Налаштування"
+
+    # кількість потоків: збереження і використання в OCR
+    page.workers_combo.setCurrentIndex(page.workers_combo.findData(3))
+    assert int(app_settings().value("ocr/workers")) == 3
+    assert ocr_worker_count() == 3
+    page.workers_combo.setCurrentIndex(0)
+    assert ocr_worker_count() <= 4
+
+    # стан моделі: немає -> є -> видалення
+    page.refresh()
+    assert "Не завантажена" in page.nllb_status.text()
+    assert page.btn_nllb_download.isEnabled() and not page.btn_nllb_delete.isEnabled()
+    model = os.path.join(str(tmp_path / "models"), nllb.MODEL_SUBDIR)
+    os.makedirs(model)
+    for n in ("model.bin", "config.json", nllb.SPM_NAME, "shared_vocabulary.json"):
+        open(os.path.join(model, n), "wb").write(b"x")
+    page.refresh()
+    assert "Завантажена" in page.nllb_status.text() and page.btn_nllb_delete.isEnabled()
+    monkeypatch.setattr(QtWidgets.QMessageBox, "question",
+                        staticmethod(lambda *a, **k: QtWidgets.QMessageBox.Yes))
+    page._delete_nllb()
+    assert not os.path.exists(model) and page.btn_nllb_download.isEnabled()
+
+
+def test_settings_reset_window(qapp, monkeypatch):
+    import hub_window
+    from modules.common.settings import app_settings
+    monkeypatch.setattr(QtWidgets.QMessageBox, "information", staticmethod(lambda *a, **k: 0))
+    app_settings().setValue("window/geometry", b"x")
+    hub_window.MainHubWindow().settings_page._reset_window()
+    assert app_settings().value("window/geometry") is None

@@ -1,3 +1,4 @@
+import math
 from PyQt5 import QtCore, QtGui
 from theme import COLORS
 
@@ -185,6 +186,15 @@ def create_vector_icon(icon_type: str, color: str = None, size: int = 32) -> QtG
         path.lineTo(4, 24)
         path.closeSubpath()
         p.drawPath(path)
+
+    elif icon_type == "settings":
+        # Шестірня: коло, вісім зубців, отвір посередині
+        p.drawEllipse(QtCore.QPointF(16, 16), 6, 6)
+        p.drawEllipse(QtCore.QPointF(16, 16), 2, 2)
+        for k in range(8):
+            ang = k * math.pi / 4
+            p.drawLine(QtCore.QPointF(16 + 9 * math.cos(ang), 16 + 9 * math.sin(ang)),
+                       QtCore.QPointF(16 + 13 * math.cos(ang), 16 + 13 * math.sin(ang)))
 
     p.end()
     return QtGui.QIcon(pix)

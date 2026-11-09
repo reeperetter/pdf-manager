@@ -274,7 +274,15 @@ def ocr_lines_from_image(pil_img, min_confidence=0, source_lang="auto"):
 
 def ocr_worker_count():
     """Скільки сторінок розпізнавати одночасно. Tesseract працює окремим
-    процесом, тож потоки Python тут справді паралельні. Беремо половину
-    ядер (до 4): решта лишається системі та самому Tesseract. На
-    1-2 ядрах повертає 1 - поведінка як раніше."""
+    процесом, тож потоки Python тут справді паралельні. За замовчуванням
+    (налаштування "ocr/workers" = 0, "Авто") беремо половину ядер, до 4:
+    решта лишається системі та самому Tesseract. На 1-2 ядрах - 1 потік.
+    Користувач може задати число (1-16) на сторінці "Налаштування"."""
+    try:
+        from modules.common.settings import app_settings
+        forced = int(app_settings().value("ocr/workers", 0) or 0)
+    except Exception:
+        forced = 0
+    if forced > 0:
+        return min(forced, 16)
     return max(1, min(4, (os.cpu_count() or 2) // 2))

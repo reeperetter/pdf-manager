@@ -130,6 +130,14 @@ def find_model():
     return None
 
 
+def download_target_hint():
+    """Куди буде завантажено модель (без створення тек), для показу в UI."""
+    try:
+        return download_target()
+    except ModelDownloadError:
+        return os.path.join(candidate_roots()[0], MODEL_SUBDIR)
+
+
 def download_target():
     """Куди качати: перша тека зі списку, у яку можна писати."""
     for root in candidate_roots():
