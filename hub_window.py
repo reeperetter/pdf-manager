@@ -45,24 +45,24 @@ class ModernSidebar(QtWidgets.QFrame):
         self.btn_group.setExclusive(True)
 
         self.btn_home = self._create_nav_button("Головна", "home", 0)
-        self.btn_ocr = self._create_nav_button("OCR (розпізнавання)", "ocr", 1)
-        self.btn_translate = self._create_nav_button("Переклад PDF", "translate", 2)
-        self.btn_convert = self._create_nav_button("Конвертація", "convert", 3)
-        self.btn_crop = self._create_nav_button("Пакетна Обрізка", "crop", 4)
-        self.btn_rotate = self._create_nav_button("Поворот сторінок", "rotate", 5)
-        self.btn_compress = self._create_nav_button("Стиснення PDF", "compress", 6)
-        self.btn_merge = self._create_nav_button("Об'єднання PDF", "merge", 7)
-        self.btn_split = self._create_nav_button("Розділення PDF", "split", 8)
+        self.btn_convert = self._create_nav_button("Конвертація", "convert", 1)
+        self.btn_compress = self._create_nav_button("Стиснення PDF", "compress", 2)
+        self.btn_merge = self._create_nav_button("Об'єднання PDF", "merge", 3)
+        self.btn_split = self._create_nav_button("Розділення PDF", "split", 4)
+        self.btn_crop = self._create_nav_button("Пакетна Обрізка", "crop", 5)
+        self.btn_rotate = self._create_nav_button("Поворот сторінок", "rotate", 6)
+        self.btn_translate = self._create_nav_button("Переклад PDF", "translate", 7)
+        self.btn_ocr = self._create_nav_button("OCR (розпізнавання)", "ocr", 8)
 
         layout.addWidget(self.btn_home)
-        layout.addWidget(self.btn_ocr)
-        layout.addWidget(self.btn_translate)
         layout.addWidget(self.btn_convert)
-        layout.addWidget(self.btn_crop)
-        layout.addWidget(self.btn_rotate)
         layout.addWidget(self.btn_compress)
         layout.addWidget(self.btn_merge)
         layout.addWidget(self.btn_split)
+        layout.addWidget(self.btn_crop)
+        layout.addWidget(self.btn_rotate)
+        layout.addWidget(self.btn_translate)
+        layout.addWidget(self.btn_ocr)
 
         layout.addStretch()
 
@@ -119,14 +119,14 @@ class HomePage(QtWidgets.QWidget):
         outer_layout.addSpacing(10)
 
         cards_info = [
-            (1, "OCR (розпізнавання)", "Розпізнавання тексту у відсканованих PDF: PDF з виділюваним текстом та/або DOCX/TXT.", "ocr"),
-            (2, "Переклад PDF", "Переклад PDF українською, російською чи англійською зі збереженням макета.", "translate"),
-            (3, "Конвертація", "Зображення, Word, Excel, PowerPoint, текст у PDF і назад.", "convert"),
-            (4, "Пакетна Обрізка", "Обрізка полів для декількох PDF-файлів одразу, за рамкою, яку ви задаєте.", "crop"),
-            (5, "Поворот сторінок", "Пакетний поворот сторінок PDF-файлів на 90°/180°/270° без обрізки.", "rotate"),
-            (6, "Стиснення PDF", "Зменшення розміру одного чи пакету PDF-файлів без відчутної втрати якості.", "compress"),
-            (7, "Об'єднання PDF", "Кілька PDF в один файл у потрібному порядку, із закладками.", "merge"),
-            (8, "Розділення PDF", "Розбиття PDF на сторінки, групи сторінок, діапазони чи розділи за закладками.", "split"),
+            (1, "Конвертація", "Зображення, Word, Excel, PowerPoint, текст у PDF і назад.", "convert"),
+            (2, "Стиснення PDF", "Зменшення розміру одного чи пакету PDF-файлів без відчутної втрати якості.", "compress"),
+            (3, "Об'єднання PDF", "Кілька PDF в один файл у потрібному порядку, із закладками.", "merge"),
+            (4, "Розділення PDF", "Розбиття PDF на сторінки, групи сторінок, діапазони чи розділи за закладками.", "split"),
+            (5, "Пакетна Обрізка", "Обрізка полів для декількох PDF-файлів одразу, за рамкою, яку ви задаєте.", "crop"),
+            (6, "Поворот сторінок", "Пакетний поворот сторінок PDF-файлів на 90°/180°/270° без обрізки.", "rotate"),
+            (7, "Переклад PDF", "Переклад PDF українською, російською чи англійською зі збереженням макета.", "translate"),
+            (8, "OCR (розпізнавання)", "Розпізнавання тексту у відсканованих PDF: PDF з виділюваним текстом та/або DOCX/TXT.", "ocr"),
         ]
 
         cards = []
@@ -235,14 +235,14 @@ class MainHubWindow(QtWidgets.QMainWindow):
         self.home_page.tool_selected.connect(self.go_to_module)
 
         self.stack.addWidget(self.home_page)
-        self.stack.addWidget(self.ocr_widget)
-        self.stack.addWidget(self.translate_widget)
         self.stack.addWidget(self.convert_widget)
-        self.stack.addWidget(self.cropper_widget)
-        self.stack.addWidget(self.rotator_widget)
         self.stack.addWidget(self.compressor_widget)
         self.stack.addWidget(self.merge_widget)
         self.stack.addWidget(self.split_widget)
+        self.stack.addWidget(self.cropper_widget)
+        self.stack.addWidget(self.rotator_widget)
+        self.stack.addWidget(self.translate_widget)
+        self.stack.addWidget(self.ocr_widget)
         self.stack.addWidget(self.settings_page)
 
         main_layout.addWidget(self.stack, stretch=1)
@@ -250,7 +250,7 @@ class MainHubWindow(QtWidgets.QMainWindow):
     def switch_module(self, index):
         # Повторний клік на "Конвертація" у бічній панелі повертає до
         # каталогу конвертацій (так само, як "Головна" - на головну).
-        if index == 3 and self.stack.currentIndex() == 3:
+        if index == 1 and self.stack.currentIndex() == 1:
             self.convert_widget.show_home()
         self.stack.setCurrentIndex(index)
 

@@ -128,12 +128,12 @@ def test_shortcuts_switch_tabs_and_open_file_dialog(qapp, monkeypatch):
 
     # Ctrl+O викликає діалог додавання файлів активного інструмента
     calls = []
-    for idx, widget in ((4, w.cropper_widget), (7, w.merge_widget)):
-        name = "add_files" if idx == 4 else "add_files_dialog"
+    for idx, widget in ((5, w.cropper_widget), (3, w.merge_widget)):
+        name = "add_files" if idx == 5 else "add_files_dialog"
         monkeypatch.setattr(widget, name, lambda *a, n=idx: calls.append(n))
         w.go_to_module(idx)
         w.shortcuts["Ctrl+O"].activated.emit()
-    assert calls == [4, 7]
+    assert calls == [5, 3]
 
 
 def test_settings_page_workers_and_model_state(qapp, monkeypatch, tmp_path):
