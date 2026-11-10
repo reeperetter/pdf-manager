@@ -45,14 +45,14 @@ class ModernSidebar(QtWidgets.QFrame):
         self.btn_group.setExclusive(True)
 
         self.btn_home = self._create_nav_button("Головна", "home", 0)
-        self.btn_convert = self._create_nav_button("Конвертація", "convert", 1)
+        self.btn_convert = self._create_nav_button("Конвертація PDF", "convert", 1)
         self.btn_compress = self._create_nav_button("Стиснення PDF", "compress", 2)
         self.btn_merge = self._create_nav_button("Об'єднання PDF", "merge", 3)
         self.btn_split = self._create_nav_button("Розділення PDF", "split", 4)
-        self.btn_crop = self._create_nav_button("Пакетна Обрізка", "crop", 5)
+        self.btn_crop = self._create_nav_button("Обрізка PDF", "crop", 5)
         self.btn_rotate = self._create_nav_button("Поворот сторінок", "rotate", 6)
         self.btn_translate = self._create_nav_button("Переклад PDF", "translate", 7)
-        self.btn_ocr = self._create_nav_button("OCR (розпізнавання)", "ocr", 8)
+        self.btn_ocr = self._create_nav_button("Розпізнавання тексту PDF", "ocr", 8)
 
         layout.addWidget(self.btn_home)
         layout.addWidget(self.btn_convert)
@@ -119,14 +119,14 @@ class HomePage(QtWidgets.QWidget):
         outer_layout.addSpacing(10)
 
         cards_info = [
-            (1, "Конвертація", "Зображення, Word, Excel, PowerPoint, текст у PDF і назад.", "convert"),
+            (1, "Конвертація PDF", "Зображення, Word, Excel, PowerPoint, текст у PDF і назад.", "convert"),
             (2, "Стиснення PDF", "Зменшення розміру одного чи пакету PDF-файлів без відчутної втрати якості.", "compress"),
             (3, "Об'єднання PDF", "Кілька PDF в один файл у потрібному порядку, із закладками.", "merge"),
             (4, "Розділення PDF", "Розбиття PDF на сторінки, групи сторінок, діапазони чи розділи за закладками.", "split"),
-            (5, "Пакетна Обрізка", "Обрізка полів для декількох PDF-файлів одразу, за рамкою, яку ви задаєте.", "crop"),
+            (5, "Обрізка PDF", "Обрізка полів для декількох PDF-файлів одразу, за рамкою, яку ви задаєте.", "crop"),
             (6, "Поворот сторінок", "Пакетний поворот сторінок PDF-файлів на 90°/180°/270° без обрізки.", "rotate"),
             (7, "Переклад PDF", "Переклад PDF українською, російською чи англійською зі збереженням макета.", "translate"),
-            (8, "OCR (розпізнавання)", "Розпізнавання тексту у відсканованих PDF: PDF з виділюваним текстом та/або DOCX/TXT.", "ocr"),
+            (8, "Розпізнавання тексту PDF", "Розпізнавання тексту у відсканованих PDF: PDF з виділюваним текстом та/або DOCX/TXT.", "ocr"),
         ]
 
         cards = []

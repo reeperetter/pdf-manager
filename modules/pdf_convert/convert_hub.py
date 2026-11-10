@@ -135,7 +135,7 @@ class ConvertHubWidget(QtWidgets.QWidget):
         home_layout = QtWidgets.QVBoxLayout(home)
         home_layout.setContentsMargins(40, 40, 40, 40)
         home_layout.setSpacing(20)
-        title = QtWidgets.QLabel("Конвертація")
+        title = QtWidgets.QLabel("Конвертація PDF")
         title.setObjectName("HomeTitle")
         home_layout.addWidget(title)
         subtitle = QtWidgets.QLabel("Оберіть, що у що потрібно перетворити")
