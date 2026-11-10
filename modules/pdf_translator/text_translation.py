@@ -2,6 +2,7 @@
 import re
 
 from . import nllb
+from .paragraphs import group_lines, join_paragraph, split_by_widths
 from .errors import ProcessingCancelled
 from .languages import BY_ISO, nllb_for
 
@@ -143,4 +144,23 @@ def translate_with_glossary(texts, glossary, **kwargs):
         again = translate_lines([texts[n] for n in retry], **kwargs)
         for n, tr in zip(retry, again):
             result[n] = tr
+    return result
+
+
+def translate_paragraphs(lines, glossary, **kwargs):
+    """Переклад рядків сторінки з урахуванням абзаців: сусідні рядки одного
+    абзацу перекладаються разом, а результат розкладається назад по
+    оригінальних рядках. Повертає список тієї ж довжини, що й lines."""
+    groups = group_lines(lines)
+    joined = [join_paragraph([lines[i]["text"] for i in g]) for g in groups]
+    translated = translate_with_glossary(joined, glossary, **kwargs)
+
+    result = [""] * len(lines)
+    for g, text in zip(groups, translated):
+        if len(g) == 1:
+            result[g[0]] = text
+            continue
+        widths = [max(lines[i]["bbox"][2] - lines[i]["bbox"][0], 1e-6) for i in g]
+        for i, piece in zip(g, split_by_widths(text or "", widths)):
+            result[i] = piece
     return result

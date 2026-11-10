@@ -155,7 +155,7 @@ def test_prepare_decaps_and_leaders():
     assert core == "Supplemental restraint system"
     assert fin("Дополнительная система") == "ДОПОЛНИТЕЛЬНАЯ СИСТЕМА"
     core, fin = prepare("(SRS) — AIR BAGS . . . . . . . . . . . . . 14")
-    assert core == "(SRS) — air bags"          # короткі абревіатури лишаються
+    assert core == "(SRS) - air bags"          # короткі абревіатури лишаються
     assert fin("Подушки") == "ПОДУШКИ . . . . . . . . . . . . . 14"
     assert prepare("Welcome back to the app")[0] == "Welcome back to the app"
     core, fin = prepare("REMOTE START . . . . 11")
@@ -203,3 +203,10 @@ def test_download_other_model_uses_its_repo(hf_server, monkeypatch):
     path = nllb.download_model(model_id="x")
     assert path.endswith("nllb-x") and nllb.find_model("x") == path
     assert nllb.find_model("600m") is None
+
+
+def test_dashes_and_unknown_symbol_cleaned():
+    from modules.pdf_translator.text_prep import prepare
+    core, finish = prepare("(SRS) — AIR BAGS . . . 14")
+    assert "—" not in core and core.endswith("air bags")
+    assert finish("(SRS) ⁇ подушки") == "(SRS) подушки".upper() + " . . . 14"

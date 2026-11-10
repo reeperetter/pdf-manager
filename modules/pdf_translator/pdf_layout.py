@@ -63,7 +63,9 @@ def extract_lines_from_page(page):
             x1 = max(s["bbox"][2] for s in spans)
             y1 = max(s["bbox"][3] for s in spans)
             lines.append(
-                {"text": text, "bbox": (x0, y0, x1, y1), "page_coords": True}
+                {"text": text, "bbox": (x0, y0, x1, y1), "page_coords": True,
+                 "size": max(s.get("size", 0) for s in spans),
+                 "font": spans[0].get("font", "")}
             )
     return lines
 

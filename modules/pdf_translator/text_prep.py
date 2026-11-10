@@ -54,7 +54,12 @@ def _decaps(text):
     return out
 
 
+_DASHES = re.compile(r"\s*[\u2012\u2013\u2014\u2015]\s*")
+
+
 def prepare(text):
+    # Довге тире немає в словнику NLLB: модель повертає "⁇" - міняємо на дефіс.
+    text = _DASHES.sub(" - ", text)
     tail = ""
     core = text
     m = _LEADER_TAIL.match(text)
@@ -65,6 +70,7 @@ def prepare(text):
         core = _decaps(core)
 
     def finish(translated):
+        translated = re.sub(r"\s*\u2047\s*", " ", translated).strip()  # невідомі символи
         result = translated.upper() if caps else translated
         return result + tail
 

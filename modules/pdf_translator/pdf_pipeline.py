@@ -26,7 +26,7 @@ from .pdf_layout import (BUNDLED_FONT, FALLBACK_FONTS,  # noqa: F401  (реек�
                          line_to_pixel_bbox, line_to_rect, sample_bg_color)
 from .text_export import save_text_outputs  # noqa: F401  (реекспорт)
 from .text_translation import (detect_text_language, translate_lines,  # noqa: F401
-                               translate_with_glossary)
+                               translate_paragraphs, translate_with_glossary)
 
 
 
@@ -281,11 +281,9 @@ def _process_pdf_core(
             if translate_targets:
                 translations = {}
                 if lines:
-                    raw_texts = [ln["text"] for ln in lines]
-
                     for lang in translate_targets:
-                        translated_lines = translate_with_glossary(
-                            raw_texts, glossary, target_lang=lang,
+                        translated_lines = translate_paragraphs(
+                            lines, glossary, target_lang=lang,
                             source_lang=source_lang, log_fn=log_fn,
                             cancel_event=cancel_event
                         )
