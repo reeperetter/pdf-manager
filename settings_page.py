@@ -91,6 +91,16 @@ class SettingsPage(QtWidgets.QWidget):
 
         # --- NLLB ---
         sec = self._section(lay, "Модель перекладу NLLB-200")
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(QtWidgets.QLabel("Модель:"))
+        self.model_combo = QtWidgets.QComboBox()
+        for m in nllb.MODELS:
+            self.model_combo.addItem(m.title, m.id)
+        row.addWidget(self.model_combo, 1)
+        sec.addLayout(row)
+        self.model_info = self._muted("")
+        sec.addWidget(self.model_info)
+        self.model_combo.currentIndexChanged.connect(self._select_model)
         self.nllb_status = QtWidgets.QLabel()
         self.nllb_status.setWordWrap(True)
         self.nllb_status.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
@@ -113,9 +123,12 @@ class SettingsPage(QtWidgets.QWidget):
         row.addStretch()
         sec.addLayout(row)
         sec.addWidget(self._muted(
-            "Модель (~600 МБ) завантажується один раз і лежить поруч зі збіркою "
+            "Обрана модель завантажується один раз і лежить поруч зі збіркою "
             "(тека models), а якщо туди не можна писати - у теці даних користувача. "
-            "Ліцензія ваг NLLB-200: CC-BY-NC 4.0 (некомерційна)."))
+            "Можна тримати кілька моделей і перемикатися між ними; переклад "
+            "використовує обрану. Більші моделі точніші, але повільніші й "
+            "потребують більше пам'яті. Ліцензія ваг NLLB-200: CC-BY-NC 4.0 "
+            "(некомерційна)."))
 
         # --- Tesseract ---
         sec = self._section(lay, "Мовні моделі Tesseract")
@@ -170,14 +183,24 @@ class SettingsPage(QtWidgets.QWidget):
             max(0, self.workers_combo.findData(forced)))
         self.workers_combo.blockSignals(False)
 
-        path = nllb.find_model()
+        spec = nllb.get_spec()
+        self.model_combo.blockSignals(True)
+        for i, m in enumerate(nllb.MODELS):
+            mark = "✔ " if nllb.find_model(m.id) else ""
+            self.model_combo.setItemText(i, mark + m.title)
+        self.model_combo.setCurrentIndex(self.model_combo.findData(spec.id))
+        self.model_combo.blockSignals(False)
+        self.model_info.setText(
+            f"{spec.note} Завантаження ≈ {spec.size_mb} МБ, пам'ять ≈ {spec.ram_gb:g} ГБ.")
+
+        path = nllb.find_model(spec.id)
         if path:
             mb = _dir_size(path) / 1048576
             self.nllb_status.setText(f"✔ Завантажена ({mb:.0f} МБ)\n{path}")
         else:
             self.nllb_status.setText(
                 "Не завантажена. Буде запропоновано при першому перекладі.\n"
-                f"Куди: {nllb.download_target_hint()}")
+                f"Куди: {nllb.download_target_hint(spec.id)}")
         self.btn_nllb_download.setEnabled(path is None)
         self.btn_nllb_delete.setEnabled(path is not None)
         self.btn_nllb_test.setEnabled(path is not None)
@@ -188,6 +211,10 @@ class SettingsPage(QtWidgets.QWidget):
         cmd = tesseract_setup.TESSERACT_CMD or "не знайдено"
         extra = f"Завантажені мови: {', '.join(langs)}" if langs else "Додаткових мов не завантажено."
         self.tess_status.setText(f"Tesseract: {cmd}\n{extra}\n{tess_dir}")
+
+    def _select_model(self):
+        nllb.set_active_model(self.model_combo.currentData())
+        self.refresh()
 
     def _save_workers(self):
         app_settings().setValue("ocr/workers", int(self.workers_combo.currentData() or 0))

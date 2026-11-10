@@ -8,7 +8,7 @@ import pytest
 
 from modules.pdf_translator import nllb, pdf_pipeline as pp
 
-REPO = nllb.MODEL_REPOS[0]
+REPO = nllb.get_spec('600m').repos[0]
 
 
 @pytest.fixture
@@ -175,3 +175,31 @@ def test_translator_sends_normalized_text_to_model(fake_translator):
     out = fake_translator.translate(["DRIVER COCKPIT . . . . 6"], "eng_Latn", "rus_Cyrl")
     assert seen[0][1:-1] == ["Driver", "cockpit"]      # модель бачить нормальний регістр
     assert out == ["DRIVER COCKPIT . . . . 6"]           # заглушка перекладає в UPPER, КАПС і хвіст відновлено
+
+
+def test_model_selection_is_persisted_and_isolated(qapp, monkeypatch, tmp_path):
+    from modules.common.settings import app_settings
+    monkeypatch.setenv("PDFMANAGER_MODELS_DIR", str(tmp_path / "models"))
+    app_settings().remove(nllb.SETTING_KEY)
+    assert nllb.active_model_id() == nllb.DEFAULT_MODEL
+    assert len({m.subdir for m in nllb.MODELS}) == len(nllb.MODELS)
+
+    nllb.set_active_model("1.3b")
+    assert nllb.active_model_id() == "1.3b"
+    assert nllb.download_target().endswith(nllb.get_spec("1.3b").subdir)
+    assert nllb.find_model() is None and nllb.find_model("600m") is None
+
+    app_settings().setValue(nllb.SETTING_KEY, "bogus")  # невідомий id -> типова
+    assert nllb.active_model_id() == nllb.DEFAULT_MODEL
+    with pytest.raises(KeyError):
+        nllb.set_active_model("bogus")
+    app_settings().remove(nllb.SETTING_KEY)
+
+
+def test_download_other_model_uses_its_repo(hf_server, monkeypatch):
+    spec = nllb.get_spec("600m")
+    other = nllb.ModelSpec("x", "X", "nllb-x", spec.repos[:1], 1, 1, "")
+    monkeypatch.setattr(nllb, "MODELS", nllb.MODELS + [other])
+    path = nllb.download_model(model_id="x")
+    assert path.endswith("nllb-x") and nllb.find_model("x") == path
+    assert nllb.find_model("600m") is None

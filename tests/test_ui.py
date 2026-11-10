@@ -159,7 +159,7 @@ def test_settings_page_workers_and_model_state(qapp, monkeypatch, tmp_path):
     page.refresh()
     assert "Не завантажена" in page.nllb_status.text()
     assert page.btn_nllb_download.isEnabled() and not page.btn_nllb_delete.isEnabled()
-    model = os.path.join(str(tmp_path / "models"), nllb.MODEL_SUBDIR)
+    model = os.path.join(str(tmp_path / "models"), nllb.get_spec('600m').subdir)
     os.makedirs(model)
     for n in ("model.bin", "config.json", nllb.SPM_NAME, "shared_vocabulary.json"):
         open(os.path.join(model, n), "wb").write(b"x")

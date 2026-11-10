@@ -9,22 +9,23 @@ def ensure_translation_model(parent_widget):
     """Перевіряє наявність моделі NLLB; якщо її немає - питає дозволу й
     завантажує у фоновому потоці з прогресом і кнопкою 'Скасувати'.
     Повертає True, якщо можна продовжувати."""
-    if nllb.find_model():
+    spec = nllb.get_spec()
+    if nllb.find_model(spec.id):
         return True
 
     try:
-        target = nllb.download_target()
+        target = nllb.download_target(spec.id)
     except nllb.ModelDownloadError as e:
         QtWidgets.QMessageBox.warning(parent_widget, "Немає куди зберегти", str(e))
         return False
 
     choice = QtWidgets.QMessageBox.question(
         parent_widget, "Потрібна модель перекладу",
-        f"Для офлайн-перекладу потрібна мовна модель NLLB-200 "
-        f"(~{nllb.APPROX_SIZE_MB} МБ, потрібен інтернет). Вона завантажується "
+        f"Для офлайн-перекладу потрібна мовна модель {spec.title} "
+        f"(~{spec.size_mb} МБ, потрібен інтернет). Вона завантажується "
         f"один раз у теку:\n{target}\n\nПісля цього переклад працює без "
         "інтернету, текст документів нікуди не надсилається.\n\n"
-        "Завантажити зараз?",
+        "Іншу модель можна обрати в Налаштуваннях.\n\nЗавантажити зараз?",
         QtWidgets.QMessageBox.Ok | QtWidgets.QMessageBox.Cancel,
         QtWidgets.QMessageBox.Ok)
     if choice != QtWidgets.QMessageBox.Ok:
@@ -34,7 +35,7 @@ def ensure_translation_model(parent_widget):
         def on_progress(done, total, name):
             report(done, total,
                    f"{name}: {done / 1048576:.0f} / {total / 1048576:.0f} МБ")
-        nllb.download_model(on_progress, cancel)
+        nllb.download_model(on_progress, cancel, spec.id)
 
     _res, error, _cancelled = run_with_progress(
         parent_widget, "Завантаження моделі перекладу", work)
@@ -42,4 +43,4 @@ def ensure_translation_model(parent_widget):
         QtWidgets.QMessageBox.warning(
             parent_widget, "Не вдалося завантажити модель", error)
         return False
-    return nllb.find_model() is not None
+    return nllb.find_model(spec.id) is not None

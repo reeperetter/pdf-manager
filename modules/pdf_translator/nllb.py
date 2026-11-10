@@ -1,12 +1,16 @@
 """
-Офлайн-переклад моделлю NLLB-200 (distilled, 600M) через CTranslate2.
+Офлайн-переклад моделлю NLLB-200 через CTranslate2.
 
 Жодного тексту документа назовні не йде: інтернет потрібен лише один раз -
-щоб завантажити файли моделі (~600 МБ, int8). Ліміту символів немає.
+щоб завантажити файли моделі (int8). Ліміту символів немає.
+
+Моделей кілька (див. MODELS): швидка 600M, збалансована distilled-1.3B та
+найточніша 3.3B. Кожна лежить у своїй підтеці; активну обирають у
+Налаштуваннях (ключ QSettings ``translate/model``).
 
 Де лежить модель
 ----------------
-Модель зберігається в теці ``models/nllb-200-600m`` ПОРЯД ІЗ ЗБІРКОЮ
+Модель зберігається в теці ``models/<підтека моделі>`` ПОРЯД ІЗ ЗБІРКОЮ
 (поруч із PDFManager.exe або з main.py), тож програма лишається
 портативною і не пише у профіль користувача. Якщо ця тека недоступна для
 запису (наприклад, програма лежить у Program Files, а в користувача
@@ -29,19 +33,69 @@ import sys
 import tempfile
 import threading
 import urllib.request
+from dataclasses import dataclass
 
+from modules.common.settings import app_settings
 from .text_prep import prepare
 
-# Репозиторії з готовою конвертацією CTranslate2 (int8). Пробуємо по черзі.
-MODEL_REPOS = [
-    "JustFrederik/nllb-200-distilled-600M-ct2-int8",
-    "winstxnhdw/nllb-200-distilled-600M-ct2-int8",
-]
-# Токенізатор (SentencePiece), якщо його немає в репозиторії конвертації.
+# Токенізатор (SentencePiece) однаковий в усіх NLLB-200; беремо його з
+# офіційного репозиторію, якщо його немає в репозиторії конвертації.
 TOKENIZER_REPO = "facebook/nllb-200-distilled-600M"
 SPM_NAME = "sentencepiece.bpe.model"
-MODEL_SUBDIR = "nllb-200-600m"
-APPROX_SIZE_MB = 600
+
+
+@dataclass(frozen=True)
+class ModelSpec:
+    id: str
+    title: str
+    subdir: str
+    repos: tuple          # репозиторії з готовою конвертацією CT2 (int8), по черзі
+    size_mb: int          # орієнтовний розмір завантаження
+    ram_gb: float         # орієнтовна пам'ять під час роботи
+    note: str
+
+
+MODELS = [
+    ModelSpec(
+        "600m", "NLLB-200 distilled 600M (швидка)", "nllb-200-600m",
+        ("JustFrederik/nllb-200-distilled-600M-ct2-int8",
+         "winstxnhdw/nllb-200-distilled-600M-ct2-int8"),
+        600, 1.5, "Найшвидша й найлегша; якість середня."),
+    ModelSpec(
+        "1.3b", "NLLB-200 distilled 1.3B (збалансована)", "nllb-200-distilled-1.3b",
+        ("JustFrederik/nllb-200-distilled-1.3B-ct2-int8",
+         "winstxnhdw/nllb-200-distilled-1.3B-ct2-int8"),
+        1400, 3.0, "Помітно точніша за 600M; приблизно вдвічі повільніша."),
+    ModelSpec(
+        "3.3b", "NLLB-200 3.3B (максимальна якість)", "nllb-200-3.3b",
+        ("JustFrederik/nllb-200-3.3B-ct2-int8",
+         "winstxnhdw/nllb-200-3.3B-ct2-int8"),
+        3400, 6.0, "Найточніша, але повільна; потрібно від 8 ГБ пам'яті."),
+]
+DEFAULT_MODEL = "600m"
+SETTING_KEY = "translate/model"
+
+
+def get_spec(model_id=None):
+    mid = model_id or active_model_id()
+    for m in MODELS:
+        if m.id == mid:
+            return m
+    raise KeyError(mid)
+
+
+def active_model_id():
+    """Обрана користувачем модель (або типова, якщо не обрано/невідома)."""
+    mid = str(app_settings().value(SETTING_KEY, DEFAULT_MODEL) or DEFAULT_MODEL)
+    return mid if any(m.id == mid for m in MODELS) else DEFAULT_MODEL
+
+
+def set_active_model(model_id):
+    get_spec(model_id)  # перевірка
+    if model_id != active_model_id():
+        unload()
+    app_settings().setValue(SETTING_KEY, model_id)
+
 
 HF_ENDPOINT = os.environ.get(
     "PDFMANAGER_HF_ENDPOINT", "https://huggingface.co").rstrip("/")
@@ -123,28 +177,30 @@ def _complete(path):
                  or not os.path.isfile(os.path.join(path, "model.bin.part"))))
 
 
-def find_model():
-    """Шлях до готової моделі або None."""
+def find_model(model_id=None):
+    """Шлях до готової моделі (обраної за замовчуванням) або None."""
+    subdir = get_spec(model_id).subdir
     for root in candidate_roots():
-        path = os.path.join(root, MODEL_SUBDIR)
+        path = os.path.join(root, subdir)
         if _complete(path):
             return path
     return None
 
 
-def download_target_hint():
+def download_target_hint(model_id=None):
     """Куди буде завантажено модель (без створення тек), для показу в UI."""
     try:
-        return download_target()
+        return download_target(model_id)
     except ModelDownloadError:
-        return os.path.join(candidate_roots()[0], MODEL_SUBDIR)
+        return os.path.join(candidate_roots()[0], get_spec(model_id).subdir)
 
 
-def download_target():
+def download_target(model_id=None):
     """Куди качати: перша тека зі списку, у яку можна писати."""
+    subdir = get_spec(model_id).subdir
     for root in candidate_roots():
         if _is_writable(root):
-            return os.path.join(root, MODEL_SUBDIR)
+            return os.path.join(root, subdir)
     raise ModelDownloadError(
         "Немає теки, у яку можна записати модель. Задайте її змінною "
         "середовища PDFMANAGER_MODELS_DIR.")
@@ -215,15 +271,16 @@ def _download_file(url, dest, expected_size, sha256, on_bytes, cancel_event):
     os.replace(part, dest)
 
 
-def download_model(progress_cb=None, cancel_event=None):
+def download_model(progress_cb=None, cancel_event=None, model_id=None):
     """Завантажує модель у download_target(). progress_cb(done, total, text).
     Докачує перервані завантаження. Повертає шлях до теки моделі."""
-    target = download_target()
+    spec = get_spec(model_id)
+    target = download_target(spec.id)
     os.makedirs(target, exist_ok=True)
 
     last_err = None
     files, repo = None, None
-    for r in MODEL_REPOS:
+    for r in spec.repos:
         try:
             files = _list_repo_files(r)
             repo = r
@@ -232,7 +289,8 @@ def download_model(progress_cb=None, cancel_event=None):
             last_err = e
     if files is None:
         raise ModelDownloadError(
-            f"Не вдалося отримати список файлів моделі ({last_err}). "
+            f"Не вдалося отримати список файлів моделі {spec.title} "
+            f"({last_err}). "
             "Перевірте інтернет або скопіюйте модель вручну в "
             f"{target}")
 
@@ -382,26 +440,33 @@ class NllbTranslator:
 
 
 _translator = None
+_translator_id = None  # None - невідомо (підставлений вручну, напр. у тестах)
 _translator_lock = threading.Lock()
 
 
 def get_translator():
-    """Кешований переклад-рушій (модель вантажиться один раз за сесію)."""
-    global _translator
+    """Кешований переклад-рушій обраної моделі (вантажиться один раз за сесію,
+    а при зміні моделі - перевантажується)."""
+    global _translator, _translator_id
     with _translator_lock:
-        if _translator is None:
-            path = find_model()
-            if path is None:
-                raise RuntimeError(
-                    "Модель перекладу NLLB не завантажена. Запустіть переклад "
-                    "із графічного інтерфейсу - програма запропонує завантажити "
-                    "її, або скопіюйте модель у "
-                    f"{os.path.join(candidate_roots()[0], MODEL_SUBDIR)}")
-            _translator = NllbTranslator(path)
+        spec = get_spec()
+        if _translator is not None and _translator_id in (None, spec.id):
+            return _translator
+        path = find_model(spec.id)
+        if path is None:
+            raise RuntimeError(
+                f"Модель перекладу «{spec.title}» не завантажена. Запустіть "
+                "переклад із графічного інтерфейсу - програма запропонує "
+                "завантажити її, або виберіть іншу модель у Налаштуваннях. "
+                f"Можна також скопіювати модель у {download_target_hint(spec.id)}")
+        _translator = None  # звільнити стару перед завантаженням нової
+        _translator = NllbTranslator(path)
+        _translator_id = spec.id
         return _translator
 
 
 def unload():
-    global _translator
+    global _translator, _translator_id
     with _translator_lock:
         _translator = None
+        _translator_id = None
