@@ -68,8 +68,9 @@ MODELS = [
         1400, 3.0, "Помітно точніша за 600M; приблизно вдвічі повільніша."),
     ModelSpec(
         "3.3b", "NLLB-200 3.3B (максимальна якість)", "nllb-200-3.3b",
-        ("JustFrederik/nllb-200-3.3B-ct2-int8",
-         "winstxnhdw/nllb-200-3.3B-ct2-int8"),
+        ("OpenNMT/nllb-200-3.3B-ct2-int8",
+         "KomorebiAI/nllb-200-3.3B-int8-ct2",
+         "Napron/nllb-200-3.3B-ct2-int8"),
         3400, 6.0, "Найточніша, але повільна; потрібно від 8 ГБ пам'яті."),
 ]
 DEFAULT_MODEL = "600m"
