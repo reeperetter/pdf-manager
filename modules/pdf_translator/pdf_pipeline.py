@@ -13,6 +13,8 @@ import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
+from modules.common.crashlog import logger
+
 import pymupdf
 from PIL import Image
 
@@ -282,6 +284,8 @@ def _process_pdf_core(
                 translations = {}
                 if lines:
                     for lang in translate_targets:
+                        logger.info("Стор. %s/%s: переклад %d рядків -> %s",
+                                    page_num, n_pages, len(lines), lang)
                         translated_lines = translate_paragraphs(
                             lines, glossary, target_lang=lang,
                             source_lang=source_lang, log_fn=log_fn,

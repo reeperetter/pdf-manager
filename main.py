@@ -1,5 +1,13 @@
+# ruff: noqa: E402
 import os
 import sys
+
+# Дві копії OpenMP-рантайму в одному процесі (ctranslate2 і інші бібліотеки)
+# на Windows можуть аварійно завершити програму ("OMP: Error #15").
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
+from modules.common import crashlog
+crashlog.setup()
 
 from PyQt5 import QtGui, QtWidgets
 

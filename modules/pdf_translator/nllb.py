@@ -35,6 +35,7 @@ import threading
 import urllib.request
 from dataclasses import dataclass
 
+from modules.common.crashlog import logger
 from modules.common.settings import app_settings
 from .text_prep import prepare
 
@@ -384,10 +385,12 @@ class NllbTranslator:
         self.sp = spm.SentencePieceProcessor()
         self.sp.load(os.path.join(model_path, SPM_NAME))
         threads = threads or min(os.cpu_count() or 2, 8)
+        logger.info("Завантаження моделі %s, потоків: %s", model_path, threads)
         self.tr = ctranslate2.Translator(
             model_path, device="cpu", compute_type="int8",
             inter_threads=1, intra_threads=threads)
         self._lock = threading.Lock()
+        logger.info("Модель завантажено")
 
     def _count(self, text):
         return len(self.sp.encode(text, out_type=str))
@@ -421,6 +424,9 @@ class NllbTranslator:
                     from .errors import ProcessingCancelled
                     raise ProcessingCancelled()
                 idx = order[b:b + BATCH_SIZE]
+                logger.info("translate_batch: %d сегм., макс. %d токенів (%d/%d)",
+                            len(idx), max(len(segments[k][2]) for k in idx),
+                            b + len(idx), len(order))
                 outs = self.tr.translate_batch(
                     [segments[k][2] for k in idx],
                     target_prefix=[[tgt]] * len(idx),

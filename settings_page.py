@@ -4,6 +4,7 @@ import shutil
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
+from modules.common import crashlog
 from modules.common.settings import app_settings
 from modules.pdf_translator import nllb, tesseract_setup
 from modules.common.progress_task import run_with_progress
@@ -120,6 +121,13 @@ class SettingsPage(QtWidgets.QWidget):
         self.btn_nllb_delete.clicked.connect(self._delete_nllb)
         for b in (self.btn_nllb_download, self.btn_nllb_test, btn_open, self.btn_nllb_delete):
             row.addWidget(b)
+        row.addStretch()
+        sec.addLayout(row)
+        row = QtWidgets.QHBoxLayout()
+        btn_log = QtWidgets.QPushButton("Відкрити теку журналів")
+        btn_log.setObjectName("BtnSecondary")
+        btn_log.clicked.connect(lambda: _open_dir(crashlog.log_dir()))
+        row.addWidget(btn_log)
         row.addStretch()
         sec.addLayout(row)
         sec.addWidget(self._muted(
