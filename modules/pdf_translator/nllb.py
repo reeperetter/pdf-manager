@@ -35,7 +35,7 @@ import threading
 import urllib.request
 from dataclasses import dataclass
 
-from modules.common.crashlog import logger
+from modules.common.crashlog import logger, memory_status, memory_text
 from modules.common.settings import app_settings
 from .text_prep import prepare
 
@@ -385,12 +385,12 @@ class NllbTranslator:
         self.sp = spm.SentencePieceProcessor()
         self.sp.load(os.path.join(model_path, SPM_NAME))
         threads = threads or min(os.cpu_count() or 2, 8)
-        logger.info("Завантаження моделі %s, потоків: %s", model_path, threads)
+        logger.info("Завантаження моделі %s, потоків: %s (%s)", model_path, threads, memory_text())
         self.tr = ctranslate2.Translator(
             model_path, device="cpu", compute_type="int8",
             inter_threads=1, intra_threads=threads)
         self._lock = threading.Lock()
-        logger.info("Модель завантажено")
+        logger.info("Модель завантажено (%s)", memory_text())
 
     def _count(self, text):
         return len(self.sp.encode(text, out_type=str))
@@ -424,9 +424,9 @@ class NllbTranslator:
                     from .errors import ProcessingCancelled
                     raise ProcessingCancelled()
                 idx = order[b:b + BATCH_SIZE]
-                logger.info("translate_batch: %d сегм., макс. %d токенів (%d/%d)",
+                logger.info("translate_batch: %d сегм., макс. %d токенів (%d/%d), %s",
                             len(idx), max(len(segments[k][2]) for k in idx),
-                            b + len(idx), len(order))
+                            b + len(idx), len(order), memory_text())
                 outs = self.tr.translate_batch(
                     [segments[k][2] for k in idx],
                     target_prefix=[[tgt]] * len(idx),
@@ -460,6 +460,13 @@ def get_translator():
         if _translator is not None and _translator_id in (None, spec.id):
             return _translator
         path = find_model(spec.id)
+        mem = memory_status()
+        if path is not None and mem and mem[1] < spec.ram_gb * 1024 * 0.7:
+            raise RuntimeError(
+                f"Недостатньо вільної пам'яті для моделі «{spec.title}»: вільно "
+                f"≈{mem[1]} МБ, потрібно близько {spec.ram_gb:g} ГБ. Закрийте "
+                "зайві програми або оберіть меншу модель у Налаштуваннях - "
+                "інакше система може аварійно завершити програму.")
         if path is None:
             raise RuntimeError(
                 f"Модель перекладу «{spec.title}» не завантажена. Запустіть "

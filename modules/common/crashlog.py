@@ -67,3 +67,50 @@ def setup():
         return d
     except Exception:
         return None  # журнал не критичний - програма працює й без нього
+
+
+def memory_status():
+    """(RSS процесу, вільна пам'ять системи) у МБ або None, якщо не вдалося."""
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            from ctypes import wintypes
+
+            class MEMSTAT(ctypes.Structure):
+                _fields_ = [("dwLength", wintypes.DWORD), ("dwMemoryLoad", wintypes.DWORD),
+                            ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("sullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+            class PMC(ctypes.Structure):
+                _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD),
+                            ("PeakWorkingSetSize", ctypes.c_size_t), ("WorkingSetSize", ctypes.c_size_t),
+                            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t), ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                            ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t)]
+            ms = MEMSTAT()
+            ms.dwLength = ctypes.sizeof(ms)
+            ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(ms))
+            pmc = PMC()
+            pmc.cb = ctypes.sizeof(pmc)
+            h = ctypes.windll.kernel32.GetCurrentProcess()
+            ctypes.windll.psapi.GetProcessMemoryInfo(h, ctypes.byref(pmc), pmc.cb)
+            return pmc.WorkingSetSize // 1048576, ms.ullAvailPhys // 1048576
+        rss = avail = None
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    rss = int(line.split()[1]) // 1024
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    avail = int(line.split()[1]) // 1024
+        return (rss, avail) if rss is not None and avail is not None else None
+    except Exception:
+        return None
+
+
+def memory_text():
+    m = memory_status()
+    return f"RSS {m[0]} МБ, вільно {m[1]} МБ" if m else "пам'ять: н/д"
